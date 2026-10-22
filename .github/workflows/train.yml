@@ -1,0 +1,102 @@
+name: Train win probability model
+run-name: Train on up to ${{ inputs.matches }} matches from ${{ inputs.days }} day(s)
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: Parquet build-age window in days
+        type: number
+        default: 1
+      matches:
+        description: Maximum usable matches to sample (minimum 3)
+        type: number
+        default: 20
+      epochs:
+        description: Training epochs
+        type: number
+        default: 3
+      every:
+        description: Ticks between snapshots
+        type: number
+        default: 4096
+      max_snapshots:
+        description: Maximum snapshots retained per match
+        type: number
+        default: 16
+      batch_size:
+        description: Matches per training batch
+        type: number
+        default: 2
+      seed:
+        description: Random seed
+        type: number
+        default: 42
+      match_mode:
+        description: Match mode
+        type: choice
+        options: [Ranked, Unranked, PrivateLobby, CoopBot, ServerTest, Tutorial, HeroLabs, NewPlayerPlacement]
+        default: Ranked
+      game_mode:
+        description: Game mode
+        type: choice
+        options: [Normal, OneVsOneTest, Sandbox, StreetBrawl, ExploreNYC, Internal]
+        default: Normal
+
+permissions:
+  contents: read
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      BOON_TICK_SEGMENTS: "1"
+      POLARS_MAX_THREADS: "2"
+      RAYON_NUM_THREADS: "2"
+      OMP_NUM_THREADS: "2"
+      MPLBACKEND: Agg
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
+        with:
+          python-version: "3.14"
+          enable-cache: false
+      - name: Install locked dependencies
+        run: uv sync --locked --no-dev
+      - name: Train and evaluate
+        env:
+          DAYS: ${{ inputs.days }}
+          MATCHES: ${{ inputs.matches }}
+          EPOCHS: ${{ inputs.epochs }}
+          EVERY: ${{ inputs.every }}
+          MAX_SNAPSHOTS: ${{ inputs.max_snapshots }}
+          BATCH_SIZE: ${{ inputs.batch_size }}
+          SEED: ${{ inputs.seed }}
+          MATCH_MODE: ${{ inputs.match_mode }}
+          GAME_MODE: ${{ inputs.game_mode }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --locked --no-dev dwp-train \
+            --days "$DAYS" --matches "$MATCHES" --epochs "$EPOCHS" \
+            --every "$EVERY" --max-snapshots "$MAX_SNAPSHOTS" \
+            --batch-size "$BATCH_SIZE" --seed "$SEED" \
+            --match-modes "$MATCH_MODE" --game-modes "$GAME_MODE" \
+            --device cpu --threads 2 --output runs/ci 2>&1 | tee training.log
+      - name: Report held-out metrics
+        if: success()
+        run: cat runs/ci/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload model, metrics, plots, and logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: win-probability-model-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            runs/ci/
+            training.log
+          if-no-files-found: warn
+          retention-days: 14
