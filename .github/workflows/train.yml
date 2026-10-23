@@ -12,6 +12,14 @@ on:
         description: Maximum usable matches to sample (minimum 3)
         type: number
         default: 20
+      workers:
+        description: Number of disjoint preparation workers (1-256)
+        type: number
+        default: 4
+      max_parallel:
+        description: Maximum preparation jobs running concurrently
+        type: number
+        default: 4
       epochs:
         description: Training epochs
         type: number
@@ -46,17 +54,22 @@ on:
 permissions:
   contents: read
 
+env:
+  BOON_TICK_SEGMENTS: "1"
+  POLARS_MAX_THREADS: "2"
+  RAYON_NUM_THREADS: "2"
+  OMP_NUM_THREADS: "2"
+  MPLBACKEND: Agg
+  PYTHONUNBUFFERED: "1"
+
 jobs:
-  train:
+  plan:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
-    env:
-      BOON_TICK_SEGMENTS: "1"
-      POLARS_MAX_THREADS: "2"
-      RAYON_NUM_THREADS: "2"
-      OMP_NUM_THREADS: "2"
-      MPLBACKEND: Agg
-      PYTHONUNBUFFERED: "1"
+    timeout-minutes: 30
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      plan_id: ${{ steps.plan.outputs.plan_id }}
+      max_parallel: ${{ steps.plan.outputs.max_parallel }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -67,30 +80,139 @@ jobs:
           enable-cache: false
       - name: Install locked dependencies
         run: uv sync --locked --no-dev
-      - name: Train and evaluate
+      - name: Discover and assign distinct replay candidates
+        id: plan
         env:
           DAYS: ${{ inputs.days }}
           MATCHES: ${{ inputs.matches }}
-          EPOCHS: ${{ inputs.epochs }}
+          WORKERS: ${{ inputs.workers }}
+          MAX_PARALLEL: ${{ inputs.max_parallel }}
           EVERY: ${{ inputs.every }}
           MAX_SNAPSHOTS: ${{ inputs.max_snapshots }}
-          BATCH_SIZE: ${{ inputs.batch_size }}
           SEED: ${{ inputs.seed }}
           MATCH_MODE: ${{ inputs.match_mode }}
           GAME_MODE: ${{ inputs.game_mode }}
         shell: bash
         run: |
           set -euo pipefail
-          uv run --locked --no-dev dwp-train \
-            --days "$DAYS" --matches "$MATCHES" --epochs "$EPOCHS" \
-            --every "$EVERY" --max-snapshots "$MAX_SNAPSHOTS" \
-            --batch-size "$BATCH_SIZE" --seed "$SEED" \
+          uv run --locked --no-dev dwp-prepare plan \
+            --days "$DAYS" --matches "$MATCHES" --workers "$WORKERS" \
+            --max-parallel "$MAX_PARALLEL" --every "$EVERY" \
+            --max-snapshots "$MAX_SNAPSHOTS" --seed "$SEED" \
             --match-modes "$MATCH_MODE" --game-modes "$GAME_MODE" \
+            --output plan.json | tee planning-result.json
+          uv run --locked --no-dev python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          result = json.loads(Path("planning-result.json").read_text())
+          print("matrix=" + json.dumps(result["matrix"]))
+          print("plan_id=" + result["plan_id"])
+          print("max_parallel=" + str(result["max_parallel"]))
+          PY
+      - name: Upload immutable preparation assignment
+        uses: actions/upload-artifact@v7
+        with:
+          name: preparation-plan-${{ steps.plan.outputs.plan_id }}
+          path: |
+            plan.json
+            planning-result.json
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 14
+
+  prepare:
+    name: Prepare graph shard ${{ matrix.shard }}
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(needs.plan.outputs.max_parallel) }}
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
+        with:
+          python-version: "3.14"
+          enable-cache: false
+      - name: Install locked dependencies
+        run: uv sync --locked --no-dev
+      - name: Download shared candidate plan
+        uses: actions/download-artifact@v8
+        with:
+          name: preparation-plan-${{ needs.plan.outputs.plan_id }}
+          path: plan
+      - name: Download, parse, and save assigned graph tables
+        env:
+          SHARD_ID: ${{ matrix.shard }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --locked --no-dev dwp-prepare shard \
+            --plan plan/plan.json --shard-id "$SHARD_ID" \
+            --output "parsed/shard-$SHARD_ID" 2>&1 | tee preparation.log
+      - name: Upload parsed Parquet graphs
+        uses: actions/upload-artifact@v7
+        with:
+          name: parsed-graphs-${{ needs.plan.outputs.plan_id }}-${{ matrix.shard }}
+          path: parsed/shard-${{ matrix.shard }}/
+          compression-level: 0
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload preparation diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: preparation-log-${{ needs.plan.outputs.plan_id }}-${{ matrix.shard }}
+          path: preparation.log
+          overwrite: true
+          if-no-files-found: warn
+          retention-days: 14
+
+  train:
+    needs: [plan, prepare]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
+        with:
+          python-version: "3.14"
+          enable-cache: false
+      - name: Install locked dependencies
+        run: uv sync --locked --no-dev
+      - name: Download expected plan
+        uses: actions/download-artifact@v8
+        with:
+          name: preparation-plan-${{ needs.plan.outputs.plan_id }}
+          path: plan
+      - name: Download all completed graph shards
+        uses: actions/download-artifact@v8
+        with:
+          pattern: parsed-graphs-${{ needs.plan.outputs.plan_id }}-*
+          path: prepared
+          merge-multiple: false
+      - name: Combine graphs, train, and evaluate
+        env:
+          EPOCHS: ${{ inputs.epochs }}
+          BATCH_SIZE: ${{ inputs.batch_size }}
+          SEED: ${{ inputs.seed }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --locked --no-dev dwp-train \
+            --prepared-data prepared --plan plan/plan.json \
+            --epochs "$EPOCHS" --batch-size "$BATCH_SIZE" --seed "$SEED" \
             --device cpu --threads 2 --output runs/ci 2>&1 | tee training.log
       - name: Report held-out metrics
         if: success()
         run: cat runs/ci/summary.md >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload model, metrics, plots, and logs
+      - name: Upload best model, metrics, plots, and logs
         if: always()
         uses: actions/upload-artifact@v7
         with:

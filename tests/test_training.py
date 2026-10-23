@@ -203,3 +203,17 @@ def test_invalid_data_and_existing_output_are_rejected(
         train_model([future, *matches[1:]], tmp_path / "new", config)
     with pytest.raises(FileExistsError):
         train_model(matches, tmp_path, config)
+
+
+@pytest.mark.parametrize("option", ["--prepared-data", "--plan"])
+def test_prepared_training_requires_a_plan_and_data_together(
+    option: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepare = Mock()
+    monkeypatch.setattr("dwp.train.prepare_matches", prepare)
+    with pytest.raises(SystemExit) as error:
+        main([option, str(tmp_path / "data"), "--output", str(tmp_path / "new")])
+    assert error.value.code == 2
+    prepare.assert_not_called()

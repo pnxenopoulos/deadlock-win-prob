@@ -175,6 +175,7 @@ def test_sampling_and_recorded_features(demo: Mock) -> None:
     demo.snapshots.assert_called_once_with(
         ["player_ticks", "world_ticks", "ziplines"],
         every=10,
+        ticks=None,
         start_tick=None,
         end_tick=None,
     )
@@ -388,3 +389,14 @@ def test_invalid_interval(demo: Mock, every: int) -> None:
 def test_invalid_catalog_version(demo: Mock) -> None:
     with pytest.raises(ValueError, match="nonempty version"):
         list(iter_graphs(demo, data_version=""))
+
+
+def test_explicit_ticks_override_stride(demo: Mock) -> None:
+    list(iter_graphs(demo, ticks=[0, 20], end_tick=20))
+    demo.snapshots.assert_called_once_with(
+        ["player_ticks", "world_ticks", "ziplines"],
+        every=None,
+        ticks=[0, 20],
+        start_tick=None,
+        end_tick=20,
+    )

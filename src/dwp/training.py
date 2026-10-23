@@ -122,6 +122,8 @@ def train_model(
     """
     if len({m.match_id for m in matches}) != len(matches):
         raise ValueError("duplicate match IDs")
+    if len(matches) < 3:
+        raise ValueError("at least three usable matches are required for training")
     for match in matches:
         if match.label not in (0, 1) or not match.graphs:
             raise ValueError("every match needs a binary label and snapshots")

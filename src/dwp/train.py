@@ -12,6 +12,8 @@ from typing import get_args
 import torch
 
 from dwp.deadlock_api import GameMode, MatchMode
+from dwp.graph_io import load_graph_shards
+from dwp.planning import read_plan
 from dwp.preparation import prepare_matches
 from dwp.training import TrainingConfig, train_model
 
@@ -59,6 +61,16 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument(
         "--data-version", help="Optional matching boon-data catalog version"
     )
+    parser.add_argument(
+        "--prepared-data",
+        type=Path,
+        help="Read Parquet graph shards instead of downloading replays",
+    )
+    parser.add_argument(
+        "--plan",
+        type=Path,
+        help="Expected preparation plan (required with --prepared-data)",
+    )
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
@@ -104,6 +116,8 @@ def main(argv: Sequence[str] | None = None) -> None:
             )
         if args.candidate_limit is not None and args.candidate_limit < args.matches:
             raise ValueError("candidate-limit must be at least matches")
+        if (args.prepared_data is None) != (args.plan is None):
+            raise ValueError("--prepared-data and --plan must be supplied together")
         if args.output.exists():
             raise ValueError(
                 f"output already exists: {args.output}; choose a new directory"
@@ -115,18 +129,27 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     torch.set_num_threads(args.threads)
     os.environ.setdefault("BOON_TICK_SEGMENTS", "1")
-    matches = prepare_matches(
-        days=args.days,
-        matches=args.matches,
-        every=args.every,
-        max_snapshots=args.max_snapshots,
-        seed=args.seed,
-        candidate_limit=args.candidate_limit,
-        match_modes=args.match_modes,
-        game_modes=args.game_modes,
-        data_version=args.data_version,
-    )
-    result = train_model(matches, args.output, config, data_config=vars(args))
+    data_config = vars(args)
+    if args.prepared_data is not None:
+        plan = read_plan(args.plan)
+        matches = load_graph_shards(args.prepared_data, plan)
+        data_config = {
+            "prepared_data": str(args.prepared_data),
+            "preparation_plan": plan,
+        }
+    else:
+        matches = prepare_matches(
+            days=args.days,
+            matches=args.matches,
+            every=args.every,
+            max_snapshots=args.max_snapshots,
+            seed=args.seed,
+            candidate_limit=args.candidate_limit,
+            match_modes=args.match_modes,
+            game_modes=args.game_modes,
+            data_version=args.data_version,
+        )
+    result = train_model(matches, args.output, config, data_config=data_config)
     print(
         json.dumps(
             {

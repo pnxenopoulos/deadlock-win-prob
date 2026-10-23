@@ -193,13 +193,83 @@ with torch.inference_mode():
     probability = model(encoder.transform(graph)).sigmoid().item()
 ```
 
+For parallel preparation, `dwp-prepare` separates source discovery from parsing:
+
+```bash
+uv run --locked dwp-prepare plan --days 1 --matches 20 --workers 4 \
+  --max-parallel 2 --every 4096 --max-snapshots 16 --output runs/plan.json
+uv run --locked dwp-prepare shard --plan runs/plan.json --shard-id 0 \
+  --output runs/prepared/shard-0
+# Run shard 1, 2, and 3 independently with their own output directories.
+uv run --locked dwp-train --prepared-data runs/prepared --plan runs/plan.json \
+  --epochs 10 --output runs/model
+```
+
+The plan is a fingerprinted manifest of disjoint candidate URL pools, per-worker
+match quotas, sampling settings, and source parameters. `--matches` is a global
+maximum, not a per-worker count. The planner queries recent matches and salts
+once, then assigns both primary and replacement candidates. The actual worker
+count is at most the requested workers, target matches, and eligible URL count;
+workers may produce zero, one, or more usable matches. At least three usable
+matches are required across the combined dataset.
+
+Each worker saves `matches.parquet` and four raw feature tables:
+`global_info.parquet`, `players.parquet`, `objectives.parquet`, and
+`ziplines.parquet`. Nested inventories/baselines, nulls, node order, and graph
+identities survive the Parquet handoff. `dataset.json` is written last as the
+completion marker. Workers never fit feature encoders or train a model.
+`dwp.graph_io.load_graph_shards` combines all planned workers, rejecting missing
+shards, mixed plans, duplicate match IDs, unassigned matches, and post-game states.
+The final trainer reads these files without downloading or reparsing replays,
+splits whole matches, and fits its encoder on training matches only. It saves
+the same best-validation checkpoint, test metrics, and plots as the local pipeline.
+
+`dwp.plots` can plot a demo's win probabilities every 10 seconds:
+
+```python
+from pathlib import Path
+from boon import Demo
+from dwp.checkpoints import load_model
+from dwp.plots import plot_win_probability
+
+model, encoder = load_model(Path("runs/example/model.pt"))
+demo = Demo("match.dem")
+figure = plot_win_probability(demo, model, encoder)
+figure.savefig("win_probability.png", dpi=150)
+```
+
+The figure shows Archmother and Hidden King probabilities against match time in
+minutes, with recording time as a fallback for partial/older demos. Sampling uses
+Boon's pause-adjusted clock and explicit graph ticks, starting at match-clock zero
+when known. It stops before game over, or at recording end if no game-over event
+is present. Empty player states are skipped, and no winner endpoint is added.
+Change the default with `interval_seconds=5`, for example. Use the same optional
+`data_version` as training when baseline/catalog features were enabled. Inference
+reuses the fitted encoder, runs without gradients, and restores the model's mode.
+
+`predict_win_probabilities(demo, model, encoder)` from the same module returns a
+Polars table with `tick`, `elapsed_seconds`, nullable `match_time_seconds`,
+`archmother_win_probability`, and `hidden_king_win_probability` for CSV export or
+custom plots. Both functions accept the same interval and catalog options.
+
 The manual GitHub Actions workflow is `.github/workflows/train.yml`. Once it is
 on the default branch, select **Actions → Train win probability model → Run
-workflow**. Inputs configure days, matches, epochs, tick stride, maximum snapshots,
-batch size, seed, match mode, and game mode. It runs on a CPU runner, reports
-held-out log loss and ECE in the job summary, and uploads the run directory and
-logs as a downloadable artifact retained for 14 days. Training is only triggered
-manually. No repository secrets are needed for the public data source.
+workflow**. In addition to days, matches, epochs, sampling, batch size, seed, and
+mode inputs, it accepts **workers** (default 4) and **max_parallel** (default 4).
+The workflow runs a planner, then a preparation matrix capped by `max_parallel`,
+then one training/evaluation job after every preparation job succeeds. It uses
+CPU runners. Data-source failures are logged and replaced within each worker's
+assigned pool; a worker may finish below its quota, and the actual counts are
+recorded in its artifact and the final training manifest.
+
+Preparation jobs upload uniquely named Parquet artifacts. Artifact names include
+the plan fingerprint, so the final job cannot accidentally mix plans on reruns;
+retries can replace only their own shard artifacts. Shards are downloaded into
+separate directories. Missing/failed jobs prevent final training, and the loader
+also verifies plan completeness. The workflow retains the plan, parsed graphs,
+worker logs, and final model/report artifacts for 14 days, and reports held-out
+log loss and ECE in the final job summary. Training is only triggered manually.
+No repository secrets are needed for the public data source.
 
 Reuse the fitted encoder unchanged for validation, test, and inference, and save
 it alongside the model checkpoint. Numeric features use signed `log1p` followed

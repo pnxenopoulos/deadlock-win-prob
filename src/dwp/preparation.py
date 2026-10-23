@@ -34,28 +34,18 @@ class ReplayMatch:
     graphs: list[GraphSnapshot]
 
 
-def prepare_matches(
+def select_candidates(
     *,
     days: int = 1,
     matches: int = 20,
-    every: int = 4096,
-    max_snapshots: int = 16,
     seed: int = 42,
     candidate_limit: int | None = None,
     match_modes: Sequence[MatchMode] = ("Ranked",),
     game_modes: Sequence[GameMode] = ("Normal",),
-    data_version: str | None = None,
-) -> list[ReplayMatch]:
-    """Sample up to matches usable replays, replacing failed candidates.
-
-    Query at most candidate_limit (default max(100, 20 * matches)) distinct
-    candidate matches, newest files first; this is not a uniform sample of the
-    entire data lake. Shuffle eligible URLs with seed and try up to that limit.
-    Sample at most max_snapshots pre-game-over states per match without looking
-    at their features or labels. No future state or winner enters a graph.
-    """
-    if days < 1 or matches < 3 or every < 1 or max_snapshots < 1:
-        raise ValueError("days/every/max_snapshots must be positive and matches >= 3")
+) -> pl.DataFrame:
+    """Query recent matches/salts once and return a seeded candidate URL order."""
+    if days < 1 or matches < 3:
+        raise ValueError("days must be positive and matches >= 3")
     limit = candidate_limit if candidate_limit is not None else max(100, matches * 20)
     if limit < matches:
         raise ValueError("candidate_limit must be at least matches")
@@ -74,9 +64,29 @@ def prepare_matches(
         )
     logger.info("Loading salts and selecting replay URLs for %d candidates", len(ids))
     salts = load_latest_match_salts().filter(pl.col("match_id").is_in(ids))
-    replays = select_replays(
+    return select_replays(
         add_replay_urls(salts).sort("match_id"), ids, seed=seed, sample_size=limit
     )
+
+
+def prepare_replays(
+    replays: pl.DataFrame,
+    *,
+    matches: int,
+    every: int = 4096,
+    max_snapshots: int = 16,
+    seed: int = 42,
+    data_version: str | None = None,
+) -> list[ReplayMatch]:
+    """Parse assigned URLs, replacing failed candidates up to a match quota.
+
+    Workers may return zero or more matches. The final training dataset must
+    contain at least three. No source discovery or feature fitting happens here.
+    """
+    if min(matches, every, max_snapshots) < 1:
+        raise ValueError("matches/every/max_snapshots must be positive")
+    if data_version is not None and not data_version:
+        raise ValueError("data_version must be nonempty")
     prepared: list[ReplayMatch] = []
     with requests.Session() as session:
         for match_id, url in replays.iter_rows():
@@ -124,12 +134,51 @@ def prepare_matches(
                 logger.warning("Skipping replay %s: %s", match_id, error)
             finally:
                 del demo
-    if len(prepared) < 3:
-        raise ValueError(
-            f"only {len(prepared)} usable replays; at least three are required"
-        )
     if len(prepared) < matches:
         logger.warning(
             "Requested %d matches; using %d usable replays", matches, len(prepared)
+        )
+    return prepared
+
+
+def prepare_matches(
+    *,
+    days: int = 1,
+    matches: int = 20,
+    every: int = 4096,
+    max_snapshots: int = 16,
+    seed: int = 42,
+    candidate_limit: int | None = None,
+    match_modes: Sequence[MatchMode] = ("Ranked",),
+    game_modes: Sequence[GameMode] = ("Normal",),
+    data_version: str | None = None,
+) -> list[ReplayMatch]:
+    """Discover and parse a bounded sample for the local end-to-end command.
+
+    The candidate pool defaults to max(100, 20 * matches), visiting newer
+    Parquet files first. This is not uniform sampling of the whole data lake.
+    Graphs are sampled before game over, with at most max_snapshots per match.
+    """
+    if days < 1 or matches < 3 or every < 1 or max_snapshots < 1:
+        raise ValueError("days/every/max_snapshots must be positive and matches >= 3")
+    replays = select_candidates(
+        days=days,
+        matches=matches,
+        seed=seed,
+        candidate_limit=candidate_limit,
+        match_modes=match_modes,
+        game_modes=game_modes,
+    )
+    prepared = prepare_replays(
+        replays,
+        matches=matches,
+        every=every,
+        max_snapshots=max_snapshots,
+        seed=seed,
+        data_version=data_version,
+    )
+    if len(prepared) < 3:
+        raise ValueError(
+            f"only {len(prepared)} usable replays; at least three are required"
         )
     return prepared

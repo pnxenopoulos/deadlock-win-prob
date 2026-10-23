@@ -144,6 +144,7 @@ def iter_graphs(
     demo: Demo,
     every: int = 64,
     *,
+    ticks: Sequence[int] | None = None,
     start_tick: int | None = None,
     end_tick: int | None = None,
     data_version: str | None = None,
@@ -151,6 +152,7 @@ def iter_graphs(
 ) -> Iterator[GraphSnapshot]:
     """Yield one graph at every N recorded ticks, within an optional window.
 
+    Explicit ticks override every; start/end windows still apply.
     Recorded player fields, objective health/phase, and zipline geometry/control
     are retained. Timers keep Boon's raw source values. Match time is null when
     the recording does not establish the game start; elapsed_seconds is the
@@ -170,19 +172,20 @@ def iter_graphs(
         dict[str, pl.DataFrame],
         demo.snapshots(
             ["player_ticks", "world_ticks", "ziplines"],
-            every=every,
+            every=every if ticks is None else None,
+            ticks=list(ticks) if ticks is not None else None,
             start_tick=start_tick,
             end_tick=end_tick,
         ),
     )
-    ticks = (
+    tick_frame = (
         pl.concat(frame.select("tick") for frame in frames.values())
         .unique()
         .sort("tick")
     )
-    if ticks.is_empty():
+    if tick_frame.is_empty():
         return
-    tick_values: list[int] = ticks["tick"].to_list()
+    tick_values: list[int] = tick_frame["tick"].to_list()
     roster = demo.players.select("steam_id", "team_num").filter(
         pl.col("steam_id").is_not_null() & pl.col("steam_id").is_unique()
     )
@@ -255,7 +258,7 @@ def iter_graphs(
         ),
     ).drop("_row")
     objectives = _nodes(
-        _at_ticks(demo.objectives, ticks, ("entity_id", "entity_serial")),
+        _at_ticks(demo.objectives, tick_frame, ("entity_id", "entity_serial")),
         "objective",
         pl.concat_str(
             pl.lit("objective:"),
@@ -270,10 +273,10 @@ def iter_graphs(
         pl.concat_str(pl.lit("zipline:"), pl.col("node_handle")),
     )
     boss = _at_ticks(
-        demo.mid_boss.filter(pl.col("event").is_in(["spawned", "killed"])), ticks
+        demo.mid_boss.filter(pl.col("event").is_in(["spawned", "killed"])), tick_frame
     )
     global_info = _nodes(
-        ticks.join(
+        tick_frame.join(
             frames["world_ticks"],
             on="tick",
             how="left",
