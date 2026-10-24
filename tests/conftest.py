@@ -3,7 +3,7 @@
 import polars as pl
 import pytest
 
-from dwp.representations import GraphSnapshot
+from dwp.graphs.snapshots import GraphSnapshot
 
 
 @pytest.fixture
@@ -33,7 +33,6 @@ def graph_snapshot() -> GraphSnapshot:
             "global",
             {
                 "elapsed_seconds": [10.0],
-                "match_time_seconds": [None],
                 "mid_boss_up": [False],
             },
         ),

@@ -24,9 +24,9 @@ dev = [
 ]
 
 [project.scripts]
-deadlock-win-prob = "dwp.train:main"
-dwp-train = "dwp.train:main"
-dwp-prepare = "dwp.prepare:main"
+deadlock-win-prob = "dwp.cli.train:main"
+dwp-train = "dwp.cli.train:main"
+dwp-prepare = "dwp.cli.prepare:main"
 
 [build-system]
 requires = ["hatchling"]
