@@ -217,3 +217,34 @@ def test_prepared_training_requires_a_plan_and_data_together(
         main([option, str(tmp_path / "data"), "--output", str(tmp_path / "new")])
     assert error.value.code == 2
     prepare.assert_not_called()
+
+
+def test_batched_evaluation_preserves_rows_weights_and_metrics(matches) -> None:
+    from dwp.ml.model import HeterogeneousGraphTransformer
+
+    encoder = GraphEncoder.fit(graph for match in matches for graph in match.graphs)
+    model = HeterogeneousGraphTransformer(encoder, hidden_dim=16, num_layers=1).eval()
+    expected_metrics, expected = evaluate(model, encoder, matches, batch_size=1)
+    sizes = []
+    handle = model.register_forward_pre_hook(
+        lambda module, inputs: sizes.append(inputs[0].valid.shape[0])
+    )
+    actual_metrics, actual = evaluate(model, encoder, matches, batch_size=5)
+    handle.remove()
+    assert sizes == [5, 5, 2]
+    assert actual.drop("probability").equals(expected.drop("probability"))
+    assert actual["probability"].to_list() == pytest.approx(
+        expected["probability"].to_list(), abs=1e-7
+    )
+    assert actual_metrics.log_loss == pytest.approx(expected_metrics.log_loss)
+    assert actual_metrics.ece == pytest.approx(expected_metrics.ece)
+
+
+@pytest.mark.parametrize("batch_size", [0, -1])
+def test_evaluation_rejects_invalid_batch_size(matches, batch_size: int) -> None:
+    from dwp.ml.model import HeterogeneousGraphTransformer
+
+    encoder = GraphEncoder.fit(graph for match in matches for graph in match.graphs)
+    model = HeterogeneousGraphTransformer(encoder, hidden_dim=16, num_layers=1)
+    with pytest.raises(ValueError, match="batch_size"):
+        evaluate(model, encoder, matches, batch_size=batch_size)

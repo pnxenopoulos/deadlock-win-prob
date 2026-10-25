@@ -20,6 +20,7 @@ src/dwp/
 │   └── parquet.py
 ├── ml/                   # Feature encoding, modeling, and evaluation
 │   ├── features.py
+│   ├── batching.py
 │   ├── model.py
 │   ├── checkpoints.py
 │   ├── training.py
@@ -149,6 +150,9 @@ The prediction code is split into small modules:
 - `dwp.ml.features`: `GraphEncoder.fit(training_graphs)` learns numerical scaling
   and categorical vocabularies from training graphs only. `transform(graph)`
   returns `GraphTensors`, with missing-value masks and no predictive identifiers.
+- `dwp.ml.batching`: `GraphBatch.from_graphs(graphs)` pads each node type and
+  upgrade-token list into a tensor batch. `.to(device)` transfers the collated
+  batch; its validity mask excludes padding from attention and pooling.
 - `dwp.ml.model`: `HeterogeneousGraphTransformer(encoder)` defaults to three layers,
   128 hidden dimensions, four attention heads, and dropout 0.1. It uses separate
   node-type encoders and Q/K/V projections, pooled upgrade-token embeddings,
@@ -330,10 +334,33 @@ Positions are also supplied as relative coordinates and distances, scaled by
 known-empty versus unknown connection lists. Raw recorded timers stay raw.
 
 Attention is dense within each graph and excludes self-edges; residual connections
-retain each node's own state. Graphs are evaluated separately inside a batch,
-without padding or attention between matches. Cost grows quadratically with node
-count, so start with small batches. Move both model and `GraphTensors` to the same
-device with `.to(device)` when using a GPU.
+retain each node's own state. Graphs share batched projections, attention, and
+readout, with each graph in its own batch entry. Node types and upgrade lists are
+padded independently; masks exclude padded nodes from attention and pooling.
+Cost is proportional to batch size times the squared padded node count, so start
+with small batches. Existing model checkpoints retain the same weights and schema.
+
+`--batch-size` controls actual tensor batching for training, validation, and test
+evaluation. Training still selects one random snapshot per match per epoch;
+evaluation still scores every retained snapshot with equal total weight per match.
+Features are encoded on demand for each bounded batch, without a feature cache.
+The same setting is exposed as `batch_size` in the manual GitHub Actions workflow.
+Batching throughput depends on the device: benchmark the intended runner before
+increasing batch size. Larger batches can be slower on small CPU runners; the
+local CUDA benchmark benefits more. `--batch-size 1` remains supported.
+
+`model(graph)` and `model([graph_a, graph_b])` collate automatically. To collate on
+CPU before transferring a whole batch to a GPU:
+
+```python
+from itertools import islice
+from dwp.ml.batching import GraphBatch
+
+batch = GraphBatch.from_graphs(
+    [encoder.transform(g) for g in islice(graphs, 4)]
+).to(device)
+logits = model.to(device)(batch)
+```
 
 ECE uses equal-width bins and compares **mean P(Archmother wins)** with the
 **observed Archmother win rate**, weighted by bin mass. Bins are left-closed and

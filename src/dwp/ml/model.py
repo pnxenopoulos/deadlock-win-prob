@@ -8,6 +8,7 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 
 # PyTorch declares forward as a mutable Callable; overriding it is its intended API.
+from dwp.ml.batching import GraphBatch
 from dwp.ml.features import (
     CATEGORICAL_FEATURES,
     NUMERIC_FEATURES,
@@ -49,20 +50,27 @@ class _AttentionBlock(nn.Module):
         )
 
     def forward(  # ty: ignore[invalid-mutable-override]
-        self, x: Tensor, graph: GraphTensors, relations: Tensor, geometry: Tensor
+        self,
+        x: Tensor,
+        graph: GraphBatch,
+        relations: Tensor,
+        geometry: Tensor,
+        attention_mask: Tensor,
     ) -> Tensor:
-        counts = [t.shape[0] for t in graph.numeric]
-        pieces = self.norm1(x).split(counts)
-        projections = torch.cat([self.qkv[i](part) for i, part in enumerate(pieces)])
+        counts = [t.shape[1] for t in graph.numeric]
+        pieces = self.norm1(x).split(counts, dim=1)
+        projections = torch.cat(
+            [self.qkv[i](part.contiguous()) for i, part in enumerate(pieces)], dim=1
+        )
         q, k, v = (
-            projections.reshape(x.shape[0], 3, self.heads, -1)
-            .permute(1, 2, 0, 3)
+            projections.reshape(x.shape[0], x.shape[1], 3, self.heads, -1)
+            .permute(2, 0, 3, 1, 4)
             .unbind(0)
         )
         bias = self.relation_bias(relations) + self.geometry_bias(geometry)
-        # Complete directed graph, excluding self edges; the residual retains self state.
-        bias = bias.permute(2, 0, 1).masked_fill(
-            torch.eye(x.shape[0], dtype=torch.bool, device=x.device), float("-inf")
+        # Each graph occupies its own batch entry. Padding and self edges are masked.
+        bias = bias.permute(0, 3, 1, 2).masked_fill(
+            ~attention_mask[:, None], float("-inf")
         )
         attended = (
             F.scaled_dot_product_attention(
@@ -72,11 +80,15 @@ class _AttentionBlock(nn.Module):
                 attn_mask=bias,
                 dropout_p=self.dropout if self.training else 0.0,
             )
-            .transpose(0, 1)
+            .transpose(1, 2)
             .reshape_as(x)
         )
         projected = torch.cat(
-            [self.output[i](part) for i, part in enumerate(attended.split(counts))]
+            [
+                self.output[i](part.contiguous())
+                for i, part in enumerate(attended.split(counts, dim=1))
+            ],
+            dim=1,
         )
         x = x + F.dropout(projected, p=self.dropout, training=self.training)
         return x + self.feed_forward(self.norm2(x))
@@ -87,8 +99,9 @@ class HeterogeneousGraphTransformer(nn.Module):
 
     Forward returns one raw logit per graph (shape [batch]); use
     BCEWithLogitsLoss for training and logits.sigmoid() for probabilities.
-    Graphs are processed separately, so padding never mixes matches. Dense
-    all-pairs attention costs O(nodes**2); no Polars edge table is needed.
+    Graphs share batched tensor operations with padding masked out of attention
+    and pooling. Dense attention costs O(batch * padded_nodes**2); no Polars
+    edge table is needed. Weight names/shapes remain checkpoint-compatible.
     """
 
     def __init__(
@@ -141,19 +154,29 @@ class HeterogeneousGraphTransformer(nn.Module):
             nn.Linear(hidden_dim, 1),
         )
 
-    def _graph_logit(self, graph: GraphTensors) -> Tensor:
+    def forward(  # ty: ignore[invalid-mutable-override]
+        self, graphs: GraphBatch | GraphTensors | Sequence[GraphTensors]
+    ) -> Tensor:
+        """Return [batch] logits using one tensor batch through every layer."""
+        graph = (
+            graphs
+            if isinstance(graphs, GraphBatch)
+            else GraphBatch.from_graphs(
+                [graphs] if isinstance(graphs, GraphTensors) else graphs
+            )
+        )
         pieces = []
         for i, numeric in enumerate(graph.numeric):
             x = self.encoders[i](numeric)
             for column, name in enumerate(CATEGORICAL_FEATURES[i]):
-                x = x + self.categories[name](graph.categorical[i][:, column])
+                x = x + self.categories[name](graph.categorical[i][:, :, column])
             if i == 1:
-                x = x + self.upgrades(graph.upgrades).sum(dim=1) / (
+                x = x + self.upgrades(graph.upgrades).sum(dim=2) / (
                     graph.upgrades != 0
-                ).sum(dim=1, keepdim=True).clamp_min(1)
+                ).sum(dim=2, keepdim=True).clamp_min(1)
             pieces.append(x)
-        x = torch.cat(pieces) + self.teams(graph.teams)
-        team_a, team_b = graph.teams[:, None], graph.teams[None, :]
+        x = torch.cat(pieces, dim=1) + self.teams(graph.teams)
+        team_a, team_b = graph.teams[:, :, None], graph.teams[:, None, :]
         playing = (team_a >= 3) & (team_b >= 3)
         relations = torch.full_like(team_a + team_b, 4)  # Unknown.
         relations = torch.where((team_a == 1) | (team_b == 1), 3, relations)  # Neutral.
@@ -166,36 +189,37 @@ class HeterogeneousGraphTransformer(nn.Module):
         relations = (
             graph.node_types[:, None] * 4 + graph.node_types[None, :]
         ) * 5 + relations
-        known = graph.position_known[:, None] & graph.position_known[None, :]
-        delta = (graph.positions[:, None] - graph.positions[None, :]) * known[
-            :, :, None
+        known = graph.position_known[:, :, None] & graph.position_known[:, None, :]
+        delta = (graph.positions[:, :, None] - graph.positions[:, None, :]) * known[
+            :, :, :, None
         ]
         geometry = torch.cat(
             [
                 delta,
                 delta.norm(dim=-1, keepdim=True),
-                known[:, :, None].float(),
-                graph.connections[:, :, None].float(),
-                (graph.connections_known[:, None] & (graph.node_types[None, :] == 3))[
-                    :, :, None
-                ].float(),
+                known[:, :, :, None].float(),
+                graph.connections[:, :, :, None].float(),
+                (
+                    graph.connections_known[:, :, None]
+                    & (graph.node_types[None, None, :] == 3)
+                )[:, :, :, None].float(),
             ],
             dim=-1,
         )
+        attention_mask = (
+            graph.valid[:, :, None]
+            & graph.valid[:, None, :]
+            & ~torch.eye(x.shape[1], dtype=torch.bool, device=x.device)
+        )
         for block in self.blocks:
-            x = block(x, graph, relations, geometry)
-        # Twenty independent buckets (four node types x five team states).
-        bucket = graph.node_types * 5 + graph.teams
-        count = torch.bincount(bucket, minlength=20).to(x.dtype)
-        pooled = x.new_zeros((20, x.shape[-1])).index_add(0, bucket, x) / count[
-            :, None
-        ].clamp_min(1)
-        summary = torch.cat([pooled.flatten(), count.log1p()])
+            x = block(x, graph, relations, geometry, attention_mask)
+        # Twenty independent buckets per graph (four node types x five team states).
+        bucket = graph.node_types[None, :] * 5 + graph.teams
+        count = x.new_zeros((x.shape[0], 20)).scatter_add(
+            1, bucket, graph.valid.to(x.dtype)
+        )
+        pooled = x.new_zeros((x.shape[0], 20, x.shape[-1])).scatter_add(
+            1, bucket[:, :, None].expand_as(x), x * graph.valid[:, :, None]
+        ) / count[:, :, None].clamp_min(1)
+        summary = torch.cat([pooled.flatten(1), count.log1p()], dim=1)
         return self.readout(summary).squeeze(-1)
-
-    def forward(self, graphs: GraphTensors | Sequence[GraphTensors]) -> Tensor:  # ty: ignore[invalid-mutable-override]
-        """Return [batch] logits; call model.eval() before evaluating probabilities."""
-        batch = [graphs] if isinstance(graphs, GraphTensors) else graphs
-        if not batch:
-            raise ValueError("at least one graph is required")
-        return torch.stack([self._graph_logit(graph) for graph in batch])

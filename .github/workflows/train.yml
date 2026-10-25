@@ -33,7 +33,7 @@ on:
         type: number
         default: 16
       batch_size:
-        description: Matches per training batch
+        description: Graphs per tensor batch for training and evaluation
         type: number
         default: 2
       seed:

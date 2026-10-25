@@ -4,6 +4,7 @@ import json
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
+from itertools import batched
 from math import isfinite
 from pathlib import Path
 from random import Random
@@ -15,6 +16,7 @@ from torch.nn import functional as F
 
 from dwp.data.datasets import split_matches
 from dwp.data.preparation import ReplayMatch
+from dwp.ml.batching import GraphBatch
 from dwp.ml.checkpoints import load_model, save_model
 from dwp.ml.features import GraphEncoder
 from dwp.ml.metrics import ProbabilityMetrics, probability_metrics
@@ -73,27 +75,34 @@ def evaluate(
     matches: Sequence[ReplayMatch],
     *,
     bins: int = 10,
+    batch_size: int = 4,
 ) -> tuple[ProbabilityMetrics, pl.DataFrame]:
     """Evaluate all retained snapshots, giving each match equal total weight.
 
-    Leaves the model in eval mode. Features are encoded one graph at a time,
-    avoiding cached quadratic adjacency tensors for the whole dataset.
+    Leaves the model in eval mode. Features are encoded on demand into bounded
+    tensor batches. No whole-dataset feature cache is retained.
     """
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
     model.eval()
     device = next(model.parameters()).device
     rows = []
-    for match in matches:
-        for graph in match.graphs:
-            probability = model(encoder.transform(graph).to(device)).sigmoid().item()
-            rows.append(
-                {
-                    "match_id": match.match_id,
-                    "tick": graph.tick,
-                    "label": match.label,
-                    "probability": probability,
-                    "weight": 1 / len(match.graphs),
-                }
-            )
+    observations = ((match, graph) for match in matches for graph in match.graphs)
+    for batch in batched(observations, batch_size):
+        features = GraphBatch.from_graphs([encoder.transform(g) for _, g in batch]).to(
+            device
+        )
+        probabilities = model(features).sigmoid().cpu().tolist()
+        rows.extend(
+            {
+                "match_id": match.match_id,
+                "tick": graph.tick,
+                "label": match.label,
+                "probability": probability,
+                "weight": 1 / len(match.graphs),
+            }
+            for (match, graph), probability in zip(batch, probabilities)
+        )
     if not rows:
         raise ValueError("evaluation requires nonempty matches and snapshots")
     predictions = pl.DataFrame(rows)
@@ -171,9 +180,9 @@ def train_model(
         training_loss = 0.0
         for start in range(0, len(order), config.batch_size):
             batch = order[start : start + config.batch_size]
-            features = [
-                encoder.transform(rng.choice(m.graphs)).to(device) for m in batch
-            ]
+            features = GraphBatch.from_graphs(
+                [encoder.transform(rng.choice(m.graphs)) for m in batch]
+            ).to(device)
             labels = torch.tensor(
                 [m.label for m in batch], dtype=torch.float32, device=device
             )
@@ -187,7 +196,13 @@ def train_model(
             )
             optimizer.step()
             training_loss += loss.detach().item() * len(batch)
-        validation, _ = evaluate(model, encoder, groups["validation"], bins=config.bins)
+        validation, _ = evaluate(
+            model,
+            encoder,
+            groups["validation"],
+            bins=config.bins,
+            batch_size=config.batch_size,
+        )
         history.append(
             {
                 "epoch": epoch,
@@ -213,7 +228,9 @@ def train_model(
     del optimizer, model
     model, encoder = load_model(output / "model.pt", device=device)
     evaluations = {
-        name: evaluate(model, encoder, groups[name], bins=config.bins)
+        name: evaluate(
+            model, encoder, groups[name], bins=config.bins, batch_size=config.batch_size
+        )
         for name in ("validation", "test")
     }
     write_reports(output, evaluations, best_epoch=best_epoch)

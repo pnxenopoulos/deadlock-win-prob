@@ -72,7 +72,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         help="Expected preparation plan (required with --prepared-data)",
     )
     parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=4,
+        help="Graphs per tensor batch for training, validation, and test evaluation",
+    )
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--train-fraction", type=float, default=0.8)
     parser.add_argument("--validation-fraction", type=float, default=0.1)
