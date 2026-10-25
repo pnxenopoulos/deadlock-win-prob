@@ -4,6 +4,7 @@ import json
 import shutil
 from dataclasses import replace
 from pathlib import Path
+from random import Random
 from unittest.mock import Mock
 
 import polars as pl
@@ -257,3 +258,69 @@ def test_loader_rejects_missing_feature_files_and_duplicate_matches(
     (tmp_path / "shard-0" / "players.parquet").unlink()
     with pytest.raises(FileNotFoundError):
         load_graph_shards(tmp_path, plan)
+
+
+def test_snapshots_are_lazy_and_read_only_requested_ranges(
+    graph_dataset, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, groups = graph_dataset
+    for i, matches in enumerate(groups):
+        save_graph_shard(matches, tmp_path / f"shard-{i}", plan, i)
+    snapshot = Mock(wraps=GraphSnapshot)
+    monkeypatch.setattr("dwp.graphs.parquet.GraphSnapshot", snapshot)
+    loaded = load_graph_shards(tmp_path, plan)
+    # Indexing thousands of matches must not create any per-snapshot DataFrames.
+    assert loaded[0].snapshot_keys == ((100, 10), (100, 20))
+    snapshot.assert_not_called()
+    assert all(not isinstance(m.graphs, list) for m in loaded)
+    graphs = loaded[0].graphs
+    assert len(graphs) == 2
+    first = graphs[0]
+    assert first.tick == 10 and graphs[-1].tick == 20
+    assert_frame_equal(first.players, groups[0][0].graphs[0].players)
+    assert [g.tick for g in graphs[:1]] == [10]
+    assert Random(42).choice(graphs).tick in (10, 20)
+    with pytest.raises(IndexError):
+        _ = graphs[2]
+    # Access does not leave GraphSnapshot objects retained by the sequence.
+    assert graphs[0] is not first
+
+
+def test_loader_rejects_unlisted_rows_and_noncontiguous_snapshots(
+    graph_dataset, tmp_path: Path
+) -> None:
+    plan, groups = graph_dataset
+    for i, matches in enumerate(groups):
+        save_graph_shard(matches, tmp_path / f"shard-{i}", plan, i)
+    path = tmp_path / "shard-0" / "players.parquet"
+    original = pl.read_parquet(path)
+    pl.concat([original, original.head(1)]).write_parquet(path)
+    with pytest.raises(ValueError, match="contiguous"):
+        load_graph_shards(tmp_path, plan)
+    original.with_columns(pl.lit(999999).alias("_match_id")).write_parquet(path)
+    with pytest.raises(ValueError, match="unlisted"):
+        load_graph_shards(tmp_path, plan)
+
+
+def test_temporary_graph_storage_lives_with_returned_matches(
+    graph_dataset, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tempfile import TemporaryDirectory
+
+    plan, groups = graph_dataset
+    for i, matches in enumerate(groups):
+        save_graph_shard(matches, tmp_path / f"shard-{i}", plan, i)
+    workspaces = []
+
+    def workspace(**kwargs):
+        temporary = TemporaryDirectory(dir=tmp_path, **kwargs)
+        workspaces.append(Path(temporary.name))
+        return temporary
+
+    monkeypatch.setattr("dwp.graphs.parquet.TemporaryDirectory", workspace)
+    loaded = load_graph_shards(tmp_path, plan)
+    assert len(workspaces) == 1 and workspaces[0].is_dir()
+    assert list(workspaces[0].glob("*.arrow"))
+    assert loaded[0].graphs[0].tick == 10
+    del loaded
+    assert not workspaces[0].exists()

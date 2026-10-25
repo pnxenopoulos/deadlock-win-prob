@@ -1,5 +1,6 @@
 """Convert graph snapshots to tensors using training-only feature statistics."""
 
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from typing import Self
@@ -11,6 +12,8 @@ from numpy.typing import NDArray
 from torch import Tensor
 
 from dwp.graphs.snapshots import GraphSnapshot
+
+logger = logging.getLogger(__name__)
 
 NODE_TYPES = ("global", "player", "objective", "zipline")
 _BASELINE = (
@@ -185,7 +188,7 @@ class GraphEncoder:
         }
         categories["upgrade_ids"] = set()
         seen = False
-        for graph in graphs:
+        for index, graph in enumerate(graphs, 1):
             seen = True
             for i, table in enumerate(_tables(graph)):
                 values = _numeric(table, NUMERIC_FEATURES[i])
@@ -201,6 +204,8 @@ class GraphEncoder:
                 categories["upgrade_ids"].update(
                     str(v) for v in graph.players["upgrade_ids"].explode().drop_nulls()
                 )
+            if index % 10_000 == 0:
+                logger.info("Fitted feature statistics on %d training snapshots", index)
         if not seen:
             raise ValueError("fit requires at least one training graph")
         means = tuple(

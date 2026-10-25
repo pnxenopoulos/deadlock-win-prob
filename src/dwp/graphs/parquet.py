@@ -1,15 +1,20 @@
 """Store parsed graph shards as Parquet and combine complete preparation plans."""
 
 import json
+import logging
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TypedDict, cast
+from tempfile import TemporaryDirectory
+from typing import TypedDict, cast, overload
 
 import polars as pl
 
 from dwp.data.planning import PreparationPlan
 from dwp.data.preparation import ReplayMatch
 from dwp.graphs.snapshots import GraphSnapshot
+
+logger = logging.getLogger(__name__)
 
 _TABLES = ("global_info", "players", "objectives", "ziplines")
 _KEYS = ("_match_id", "_snapshot_tick")
@@ -31,6 +36,47 @@ class _ShardMetadata(TypedDict):
     shard_count: int
     matches: int
     snapshots: int
+
+
+@dataclass(frozen=True, slots=True)
+class _StoredSnapshots(Sequence[GraphSnapshot]):
+    """Read only requested row ranges; shared temporary files own the raw data."""
+
+    workspace: TemporaryDirectory[str]
+    tables: dict[str, pl.LazyFrame]
+    ranges: dict[str, dict[tuple[int, int], tuple[int, int]]]
+    match_id: int
+    build: int
+    data_version: str | None
+    ticks: tuple[int, ...]
+
+    def __len__(self) -> int:
+        return len(self.ticks)
+
+    @overload
+    def __getitem__(self, index: int) -> GraphSnapshot: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> Sequence[GraphSnapshot]: ...
+
+    def __getitem__(
+        self, index: int | slice
+    ) -> GraphSnapshot | Sequence[GraphSnapshot]:
+        if isinstance(index, slice):
+            return [self[i] for i in range(*index.indices(len(self)))]
+        tick = self.ticks[index]
+        return GraphSnapshot(
+            tick=tick,
+            match_id=self.match_id,
+            build=self.build,
+            data_version=self.data_version,
+            **{
+                name: table.slice(*self.ranges[name].get((self.match_id, tick), (0, 0)))
+                .collect()
+                .drop(_KEYS)
+                for name, table in self.tables.items()
+            },
+        )
 
 
 def _validate_match(match: ReplayMatch, plan: PreparationPlan) -> None:
@@ -130,7 +176,11 @@ def load_graph_shards(root: Path, plan: PreparationPlan) -> list[ReplayMatch]:
 
     root may be one shard directory or a parent containing per-artifact shard
     directories. Match IDs, labels, nullable nested features, and node order are
-    retained. Whole-match splitting and encoder fitting belong to training.
+    retained. Raw tables are converted one at a time to temporary uncompressed
+    IPC files, then read in snapshot-sized slices. Graphs are a lazy sequence,
+    not a retained list of DataFrames. Temporary files live as long as the
+    returned matches and are removed on release. Allow local disk space for
+    uncompressed node tables. No encoded features or fitted statistics are saved.
     """
     descriptors = (
         [root / "dataset.json"]
@@ -153,8 +203,10 @@ def load_graph_shards(root: Path, plan: PreparationPlan) -> list[ReplayMatch]:
         found[shard], metadata_by_shard[shard] = path.parent, metadata
     if set(found) != set(range(len(plan["shards"]))):
         raise ValueError("missing prepared shards; all planned workers must complete")
+    workspace = TemporaryDirectory(prefix="dwp-graphs-")
     matches: list[ReplayMatch] = []
     seen: set[int] = set()
+    logger.info("Indexing %d prepared shards into disk-backed snapshots", len(found))
     for shard, folder in sorted(found.items()):
         assignment = plan["shards"][shard]
         allowed = {r["match_id"]: r["replay_url"] for r in assignment["replays"]}
@@ -165,13 +217,34 @@ def load_graph_shards(root: Path, plan: PreparationPlan) -> list[ReplayMatch]:
         expected = {(row["match_id"], tick) for row in rows for tick in row["ticks"]}
         if len(expected) != metadata["snapshots"]:
             raise ValueError("shard snapshot count differs from manifest")
-        tables = {name: pl.read_parquet(folder / f"{name}.parquet") for name in _TABLES}
-        partitions = {
-            name: table.partition_by(_KEYS, as_dict=True, maintain_order=True)
-            for name, table in tables.items()
-        }
-        if any(not set(groups) <= expected for groups in partitions.values()):
-            raise ValueError("feature table contains unlisted matches or snapshots")
+        tables: dict[str, pl.LazyFrame] = {}
+        ranges: dict[str, dict[tuple[int, int], tuple[int, int]]] = {}
+        for name in _TABLES:
+            # Only one decompressed shard table is resident during conversion.
+            table = pl.read_parquet(folder / f"{name}.parquet")
+            runs = (
+                table.select(*_KEYS, pl.struct(_KEYS).rle_id().alias("_run"))
+                .group_by("_run", maintain_order=True)
+                .agg(*(pl.col(key).first() for key in _KEYS), pl.len().alias("length"))
+            )
+            spans: dict[tuple[int, int], tuple[int, int]] = {}
+            offset = 0
+            for match_id, tick, length in runs.select(*_KEYS, "length").iter_rows():
+                key = (match_id, tick)
+                if key not in expected:
+                    raise ValueError(
+                        "feature table contains unlisted matches or snapshots"
+                    )
+                if key in spans:
+                    raise ValueError(
+                        "snapshot rows must be contiguous within each table"
+                    )
+                spans[key] = (offset, length)
+                offset += length
+            target = Path(workspace.name) / f"{shard}-{name}.arrow"
+            table.write_ipc(target, compression="uncompressed", record_batch_size=4096)
+            del table
+            tables[name], ranges[name] = pl.scan_ipc(target), spans
         for row in rows:
             match_id = row["match_id"]
             if match_id in seen:
@@ -181,21 +254,34 @@ def load_graph_shards(root: Path, plan: PreparationPlan) -> list[ReplayMatch]:
                 or row["data_version"] != plan["data_version"]
             ):
                 raise ValueError("prepared match differs from its plan assignment")
-            graphs = [
-                GraphSnapshot(
-                    tick=tick,
-                    match_id=match_id,
-                    build=row["build"],
-                    data_version=row["data_version"],
-                    **{
-                        name: partitions[name]
-                        .get((match_id, tick), tables[name].clear())
-                        .drop(_KEYS)
-                        for name in _TABLES
-                    },
+            ticks = row["ticks"]
+            if (
+                row["label"] not in (0, 1)
+                or not 1 <= len(ticks) <= plan["max_snapshots"]
+                or any(not 0 <= tick < row["game_over_tick"] for tick in ticks)
+            ):
+                raise ValueError(
+                    "matches need binary labels and bounded pre-game-over snapshots"
                 )
-                for tick in row["ticks"]
-            ]
+            if len(set(ticks)) != len(ticks):
+                raise ValueError("duplicate snapshot ticks in a match")
+            if any(
+                ranges["global_info"].get((match_id, tick), (0, 0))[1] != 1
+                or ranges["players"].get((match_id, tick), (0, 0))[1] < 1
+                for tick in ticks
+            ):
+                raise ValueError(
+                    "each snapshot needs one global node and player observations"
+                )
+            graphs = _StoredSnapshots(
+                workspace,
+                tables,
+                ranges,
+                match_id,
+                row["build"],
+                row["data_version"],
+                tuple(ticks),
+            )
             match = ReplayMatch(
                 match_id,
                 row["label"],
@@ -204,7 +290,14 @@ def load_graph_shards(root: Path, plan: PreparationPlan) -> list[ReplayMatch]:
                 row["game_over_tick"],
                 graphs,
             )
-            _validate_match(match, plan)
             seen.add(match_id)
             matches.append(match)
+        logger.info(
+            "Indexed shard %d/%d: %d matches, %d snapshots (%d matches total)",
+            shard + 1,
+            len(found),
+            len(rows),
+            metadata["snapshots"],
+            len(matches),
+        )
     return sorted(matches, key=lambda match: match.match_id)

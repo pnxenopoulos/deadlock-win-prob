@@ -269,6 +269,12 @@ identities survive the Parquet handoff. `dataset.json` is written last as the
 completion marker. Workers never fit feature encoders or train a model.
 `dwp.graphs.parquet.load_graph_shards` combines all planned workers, rejecting missing
 shards, mixed plans, duplicate match IDs, unassigned matches, and post-game states.
+The loader converts one raw shard table at a time to temporary uncompressed IPC
+files, then reads only requested snapshot row ranges. Each match's `graphs` is a
+lazy sequence: indexing, iteration, and `random.choice` work without retaining
+all snapshot DataFrames. Keep the returned matches alive while training; their
+temporary files are removed when released. This needs extra local temporary disk
+space for the uncompressed tables, but does not cache encoded features.
 The final trainer reads these files without downloading or reparsing replays,
 splits whole matches, and fits its encoder on training matches only. It saves
 the same best-validation checkpoint, test metrics, and plots as the local pipeline.
@@ -322,6 +328,15 @@ also verifies plan completeness. The workflow retains the plan, parsed graphs,
 worker logs, and final model/report artifacts for 14 days, and reports held-out
 log loss and ECE in the final job summary. Training is only triggered manually.
 No repository secrets are needed for the public data source.
+
+The training job logs shard indexing, feature fitting, and training/evaluation
+progress, plus memory, CPU, and disk usage every minute. Resource logs and peak
+process memory from `/usr/bin/time` are included with the final artifact when
+upload can run. Exit code 143 means SIGTERM; a runner-shutdown message does not
+by itself establish an out-of-memory kill. Keep `batch_size` at 1 or 2 for these
+CPU runners before increasing it: dense attention memory scales with batch size
+and the square of the largest padded graph. Increasing preparation workers does
+not reduce memory used by a training batch.
 
 Reuse the fitted encoder unchanged for validation, test, and inference, and save
 it alongside the model checkpoint. Numeric features use signed `log1p` followed

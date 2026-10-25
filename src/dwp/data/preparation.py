@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from compression.zstd import ZstdError
 from dataclasses import dataclass
 from random import Random
+from typing import Protocol, runtime_checkable
 
 import polars as pl
 import requests
@@ -22,6 +23,14 @@ from dwp.graphs.snapshots import GraphSnapshot, iter_graphs
 logger = logging.getLogger(__name__)
 
 
+@runtime_checkable
+class _SnapshotIndex(Protocol):
+    """Metadata available without reading disk-backed node tables."""
+
+    match_id: int
+    ticks: tuple[int, ...]
+
+
 @dataclass(frozen=True, slots=True)
 class ReplayMatch:
     """Graphs and outcome metadata kept separate to avoid target leakage."""
@@ -31,7 +40,14 @@ class ReplayMatch:
     replay_url: str
     build: int
     game_over_tick: int
-    graphs: list[GraphSnapshot]
+    graphs: Sequence[GraphSnapshot]
+
+    @property
+    def snapshot_keys(self) -> tuple[tuple[int | None, int], ...]:
+        """Return (match_id, tick) keys without loading indexed snapshots."""
+        if isinstance(self.graphs, _SnapshotIndex):
+            return tuple((self.graphs.match_id, tick) for tick in self.graphs.ticks)
+        return tuple((graph.match_id, graph.tick) for graph in self.graphs)
 
 
 def select_candidates(

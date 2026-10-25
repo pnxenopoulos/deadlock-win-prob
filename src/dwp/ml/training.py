@@ -8,6 +8,7 @@ from itertools import batched
 from math import isfinite
 from pathlib import Path
 from random import Random
+from time import monotonic
 from typing import Literal
 
 import polars as pl
@@ -87,6 +88,9 @@ def evaluate(
     model.eval()
     device = next(model.parameters()).device
     rows = []
+    total = sum(len(match.graphs) for match in matches)
+    logger.info("Evaluating %d snapshots from %d matches", total, len(matches))
+    last_progress = monotonic()
     observations = ((match, graph) for match in matches for graph in match.graphs)
     for batch in batched(observations, batch_size):
         features = GraphBatch.from_graphs([encoder.transform(g) for _, g in batch]).to(
@@ -103,6 +107,9 @@ def evaluate(
             }
             for (match, graph), probability in zip(batch, probabilities)
         )
+        if monotonic() - last_progress >= 60:
+            logger.info("Evaluated %d/%d snapshots", len(rows), total)
+            last_progress = monotonic()
     if not rows:
         raise ValueError("evaluation requires nonempty matches and snapshots")
     predictions = pl.DataFrame(rows)
@@ -133,16 +140,21 @@ def train_model(
         raise ValueError("duplicate match IDs")
     if len(matches) < 3:
         raise ValueError("at least three usable matches are required for training")
-    for match in matches:
+    logger.info("Validating %d matches before training", len(matches))
+    last_progress = monotonic()
+    for index, match in enumerate(matches, 1):
         if match.label not in (0, 1) or not match.graphs:
             raise ValueError("every match needs a binary label and snapshots")
         if any(
-            g.match_id != match.match_id or g.tick >= match.game_over_tick
-            for g in match.graphs
+            match_id != match.match_id or tick >= match.game_over_tick
+            for match_id, tick in match.snapshot_keys
         ):
             raise ValueError(
                 "graph match IDs must agree and ticks must precede game over"
             )
+        if monotonic() - last_progress >= 60:
+            logger.info("Validated %d/%d matches", index, len(matches))
+            last_progress = monotonic()
     rows = pl.DataFrame({"match_id": [m.match_id for m in matches]})
     splits = split_matches(
         rows, config.train_fraction, config.validation_fraction, seed=config.seed
@@ -163,12 +175,21 @@ def train_model(
     if device == "cuda" and not torch.cuda.is_available():
         raise ValueError("CUDA was requested but is unavailable")
     output.mkdir(parents=True, exist_ok=False)
+    logger.info("Writing split metadata for %d matches", len(matches))
     write_run_metadata(
         output, asdict(config), groups, device=device, data_config=data_config
     )
     torch.manual_seed(config.seed)
     rng = Random(config.seed)
+    logger.info(
+        "Fitting encoder on %d snapshots from %d training matches",
+        sum(len(m.graphs) for m in groups["train"]),
+        len(groups["train"]),
+    )
     encoder = GraphEncoder.fit(g for match in groups["train"] for g in match.graphs)
+    logger.info(
+        "Encoder fitted; training on %s with batch size %d", device, config.batch_size
+    )
     model = HeterogeneousGraphTransformer(encoder, **config.model).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
     history: list[dict[str, int | float]] = []
@@ -178,6 +199,13 @@ def train_model(
         model.train()
         order = rng.sample(groups["train"], len(groups["train"]))
         training_loss = 0.0
+        last_progress = monotonic()
+        logger.info(
+            "Starting epoch %d/%d (%d training matches)",
+            epoch,
+            config.epochs,
+            len(order),
+        )
         for start in range(0, len(order), config.batch_size):
             batch = order[start : start + config.batch_size]
             features = GraphBatch.from_graphs(
@@ -196,6 +224,15 @@ def train_model(
             )
             optimizer.step()
             training_loss += loss.detach().item() * len(batch)
+            if monotonic() - last_progress >= 60:
+                logger.info(
+                    "Epoch %d/%d trained %d/%d matches",
+                    epoch,
+                    config.epochs,
+                    start + len(batch),
+                    len(order),
+                )
+                last_progress = monotonic()
         validation, _ = evaluate(
             model,
             encoder,

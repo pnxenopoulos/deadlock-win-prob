@@ -52,8 +52,8 @@ def write_run_metadata(
                 "replay_url": m.replay_url,
                 "build": m.build,
                 "game_over_tick": m.game_over_tick,
-                "first_tick": min(g.tick for g in m.graphs),
-                "last_tick": max(g.tick for g in m.graphs),
+                "first_tick": min(tick for _, tick in m.snapshot_keys),
+                "last_tick": max(tick for _, tick in m.snapshot_keys),
             }
             for name, group in groups.items()
             for m in group

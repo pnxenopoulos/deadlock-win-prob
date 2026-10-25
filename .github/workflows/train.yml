@@ -205,7 +205,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          uv run --locked --no-dev dwp-train \
+          # Print diagnostics while the process is alive: a runner shutdown can
+          # prevent even always() artifact-upload steps from running.
+          (
+            while true; do
+              {
+                date -u '+%Y-%m-%dT%H:%M:%SZ training resources'
+                free -m
+                ps -eo pid,comm,pcpu,rss --sort=-rss | sed -n '1,8p'
+                df -h . "${TMPDIR:-/tmp}"
+              } | tee -a resources.log
+              sleep 60
+            done
+          ) &
+          monitor_pid=$!
+          trap 'kill "$monitor_pid" 2>/dev/null || true' EXIT
+          /usr/bin/time -v -o training-resources.log \
+            uv run --locked --no-dev dwp-train \
             --prepared-data prepared --plan plan/plan.json \
             --epochs "$EPOCHS" --batch-size "$BATCH_SIZE" --seed "$SEED" \
             --device cpu --threads 2 --output runs/ci 2>&1 | tee training.log
@@ -220,5 +236,7 @@ jobs:
           path: |
             runs/ci/
             training.log
+            resources.log
+            training-resources.log
           if-no-files-found: warn
           retention-days: 14
