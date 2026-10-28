@@ -34,7 +34,9 @@ class GraphBatch:
     valid: Tensor
 
     @classmethod
-    def from_graphs(cls, graphs: Sequence[GraphTensors]) -> Self:
+    def from_graphs(
+        cls, graphs: Sequence[GraphTensors], *, pad_empty_types: bool = False
+    ) -> Self:
         """Pad one batch on the input device; feature encoding stays on demand."""
         if not graphs:
             raise ValueError("at least one graph is required")
@@ -47,6 +49,11 @@ class GraphBatch:
             pad_sequence([g.categorical[i] for g in graphs], batch_first=True)
             for i in range(4)
         )
+        if pad_empty_types:
+            numeric = tuple(F.pad(t, (0, 0, 0, int(t.shape[1] == 0))) for t in numeric)
+            categorical = tuple(
+                F.pad(t, (0, 0, 0, int(t.shape[1] == 0))) for t in categorical
+            )
         counts = [values.shape[1] for values in numeric]
         offsets = list(accumulate(counts, initial=0))
         size, nodes = len(graphs), offsets[-1]

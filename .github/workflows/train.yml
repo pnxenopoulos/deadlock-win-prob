@@ -174,6 +174,9 @@ jobs:
 
   train:
     needs: [plan, prepare]
+    outputs:
+      artifact_id: ${{ steps.model_artifact.outputs.artifact-id }}
+      model_version: ${{ steps.export.outputs.model_version }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -225,10 +228,19 @@ jobs:
             --prepared-data prepared --plan plan/plan.json \
             --epochs "$EPOCHS" --batch-size "$BATCH_SIZE" --seed "$SEED" \
             --device cpu --threads 2 --output runs/ci 2>&1 | tee training.log
+      - name: Export and validate ONNX model and encoder
+        id: export
+        env:
+          MODEL_VERSION: model-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          uv run --locked --no-dev --extra export dwp-export runs/ci/model.pt \
+            --output runs/ci/onnx --model-version "$MODEL_VERSION"
+          echo "model_version=$MODEL_VERSION" >> "$GITHUB_OUTPUT"
       - name: Report held-out metrics
         if: success()
         run: cat runs/ci/summary.md >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload best model, metrics, plots, and logs
+      - name: Upload best model, ONNX bundle, metrics, plots, and logs
+        id: model_artifact
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -240,3 +252,44 @@ jobs:
             training-resources.log
           if-no-files-found: warn
           retention-days: 14
+
+  release:
+    name: Publish validated model release
+    needs: train
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download model artifact from the completed training job
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.train.outputs.artifact_id }}
+          path: artifact
+      - name: Publish versioned model and browser bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.train.outputs.model_version }}
+          REVISION: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle=artifact/runs/ci/onnx
+          (cd "$bundle" && sha256sum --check SHA256SUMS)
+          cat "$bundle/summary.md" > release-notes.md
+          printf '\nValidated ONNX export and encoder metadata for browser inference.\n\nTraining run: %s\n' "$RUN_URL" >> release-notes.md
+          if gh release view "$TAG" --json isDraft --jq .isDraft > release-state.txt; then
+            if [ "$(cat release-state.txt)" = false ]; then
+              gh release view "$TAG" --json url --jq .url >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            # A previous upload may have stopped partway through a draft release.
+            gh release upload "$TAG" "$bundle"/* --clobber
+          else
+            gh release create "$TAG" --draft --target "$REVISION" \
+              --title "Win probability $TAG" --notes-file release-notes.md "$bundle"/*
+          fi
+          gh release edit "$TAG" --draft=false --latest
+          gh release view "$TAG" --json url --jq .url >> "$GITHUB_STEP_SUMMARY"

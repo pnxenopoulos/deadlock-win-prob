@@ -27,6 +27,14 @@ dev = [
 deadlock-win-prob = "dwp.cli.train:main"
 dwp-train = "dwp.cli.train:main"
 dwp-prepare = "dwp.cli.prepare:main"
+dwp-export = "dwp.cli.export:main"
+
+[project.optional-dependencies]
+export = [
+    "onnx>=1.23.2",
+    "onnxruntime>=1.31.1",
+    "onnxscript>=0.7.2",
+]
 
 [build-system]
 requires = ["hatchling"]

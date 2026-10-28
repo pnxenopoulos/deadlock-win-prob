@@ -23,6 +23,7 @@ src/dwp/
 │   ├── batching.py
 │   ├── model.py
 │   ├── checkpoints.py
+│   ├── export.py
 │   ├── training.py
 │   ├── metrics.py
 │   ├── reporting.py
@@ -385,3 +386,75 @@ stability. Scores default to equal snapshot weighting; supply weights as above
 to prevent longer matches from dominating. ECE depends on binning and sample
 size; also examine reliability plots and scores by game time. These are
 calibration diagnostics; they do not fit a probability calibration transform.
+
+
+## ONNX export and model releases
+
+Export an existing best-validation checkpoint without retraining:
+
+```bash
+uv run --locked --extra export dwp-export runs/example/model.pt \
+  --output runs/example/onnx --model-version my-model-v1
+```
+
+ONNX tooling is an optional `export` extra; normal inference, training, and
+preparation do not require it. `dwp.ml.export.export_onnx(checkpoint, output,
+model_version=...)` provides the same operation in Python. The output directory
+must be new. Export loads the checkpoint on CPU, checks the ONNX graph, and
+compares ONNX Runtime probabilities against PyTorch across different batch,
+node, and inventory sizes, including masked/global-only cases. A failure prevents
+release publication. Export always uses the saved checkpoint selected by
+validation loss; it does not select weights using the test set.
+
+The output contains:
+
+- `model.onnx`: a single-file ONNX model, opset 18, with embedded weights.
+- `encoder.json`: ordered numeric/categorical features, fitted means/scales,
+  vocabularies, team mappings, missing-value rules, derived features, geometry,
+  inventory, padding, and time-sampling conventions.
+- `manifest.json`: model version, input names/dtypes/shapes, dimension rules,
+  output labels, model settings, optional catalog version, software versions,
+  parity results, and SHA-256 digests.
+- `model.pt`: the original PyTorch checkpoint, byte for byte.
+- `parity.json`, `SHA256SUMS`, and available `run.json`, `metrics.json`,
+  `summary.md`: validation and training provenance.
+- `win-probability-model.zip`: the complete, flat bundle of those files.
+
+The ONNX model returns one `float32` P(Archmother wins) per graph. Hidden King's
+probability is its complement. Inputs are encoded tensors; raw replay parsing and
+encoder preprocessing remain the caller's responsibility. Float inputs are
+`float32`, category/team/token inputs are `int64`, and masks/connections are
+boolean. JavaScript clients need `BigInt64Array` for `int64` and `Uint8Array` for
+boolean tensors in ONNX Runtime Web.
+
+Numeric node tensors concatenate standardized features followed by observed
+masks, in the exact order in `encoder.json`. Nodes are concatenated as global,
+player, objective, zipline. All node-axis tensors use
+`N = 1 + P + O + Z`; connection tensors have shape `[B, N, N]`. Every node type
+has at least one slot, even when absent, and every player has at least one token
+slot. Zero-filled placeholder nodes must have `valid=false`. Padding positions
+are not real entities, and changing graph sizes must not truncate entities.
+`dwp.ml.export.onnx_inputs(encoded_graphs)` produces this contract from Python
+`GraphTensors`, including padding empty types. Model-internal relations,
+attention, pooling, and sigmoid are included in the ONNX graph.
+
+For a browser integration, serve `model.onnx`, `encoder.json`, and `manifest.json`
+together from your site's static assets, pin a model version, and verify the
+hashes. Export does not port Boon's feature extraction into the viewer. Match
+the parser/catalog version and the full feature contract before inference.
+WebGPU execution requires separate operator-coverage and performance validation.
+
+Every successful manual training workflow exports the browser bundle and adds
+it to the usual Actions artifact. A separate release job checks its checksums,
+uploads the individual bundle files and ZIP, then publishes the GitHub release
+`model-<run_id>-<run_attempt>` and marks it latest. Only that job receives
+`contents: write`; preparation/training retain read-only repository permissions.
+The release is created as a draft until asset upload succeeds. Retries can repair
+a partial draft; already-published versions are left unchanged. Release assets
+persist independently of the Actions artifacts' 14-day retention.
+
+To run all export tests locally:
+
+```bash
+uv run --locked --extra export pytest
+```

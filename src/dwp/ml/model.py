@@ -72,6 +72,9 @@ class _AttentionBlock(nn.Module):
         bias = bias.permute(0, 3, 1, 2).masked_fill(
             ~attention_mask[:, None], float("-inf")
         )
+        # Exported softmax must also handle queries with no allowed keys.
+        active_queries = attention_mask.any(dim=-1)[:, None, :, None]
+        bias = bias.masked_fill(~active_queries, 0)
         attended = (
             F.scaled_dot_product_attention(
                 q,
@@ -80,7 +83,9 @@ class _AttentionBlock(nn.Module):
                 attn_mask=bias,
                 dropout_p=self.dropout if self.training else 0.0,
             )
+            .masked_fill(~active_queries, 0)
             .transpose(1, 2)
+            .contiguous()
             .reshape_as(x)
         )
         projected = torch.cat(
