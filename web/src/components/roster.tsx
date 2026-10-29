@@ -49,7 +49,9 @@ export function Roster({
             <div className="team-list">
               {players.map(({ p, i }) => {
                 const hero = heroById.get(number(p, "hero_id"));
-                const alive = p.is_alive !== false && number(p, "health") > 0;
+                const alive =
+                  p.is_alive !== false &&
+                  (p.health == null || number(p, "health") > 0);
                 return (
                   <button
                     key={i}
@@ -85,7 +87,7 @@ export function Roster({
                       </span>
                       <span className="hero-health">
                         {alive
-                          ? `${Math.round(number(p, "health"))} / ${Math.round(number(p, "max_health"))} HP`
+                          ? `${p.health == null ? "—" : Math.round(number(p, "health"))} / ${p.max_health == null ? "—" : Math.round(number(p, "max_health"))} HP`
                           : `Respawning · ${Math.round(number(p, "respawn_time"))}s`}
                         {number(p, "barrier") > 0 && (
                           <span>

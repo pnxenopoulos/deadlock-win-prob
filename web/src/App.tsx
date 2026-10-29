@@ -32,7 +32,16 @@ import {
 
 export function App() {
   const [scenario, setScenario] = useState(initialScenario),
-    [preset, setPreset] = useState("2"),
+    [preset, setPreset] = useState(() => {
+      try {
+        const saved = localStorage.getItem("dwp-scenario-v1");
+        if (saved) {
+          parseScenario(saved);
+          return "custom";
+        }
+      } catch {}
+      return "2";
+    }),
     [selection, setSelection] = useState<Selection>({
       kind: "players",
       index: 0,
@@ -184,7 +193,7 @@ export function App() {
               onChange={(e) => loadPreset(e.target.value)}
             >
               {preset === "custom" && (
-                <option value="custom">Imported scenario</option>
+                <option value="custom">Custom scenario</option>
               )}
               {presets.map((p, i) => (
                 <option key={i} value={i}>
@@ -324,7 +333,9 @@ export function App() {
                   setScenario((s) => setTime(s, +e.target.value))
                 }
               />
-              <span className="time-end">60:00</span>
+              <span className="time-end">
+                {clock(Math.max(3600, graph.elapsed_seconds))}
+              </span>
             </div>
             <p className="scenario-note">
               Estimates are most useful for realistic match states. All

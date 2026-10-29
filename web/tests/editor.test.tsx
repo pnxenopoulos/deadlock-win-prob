@@ -209,3 +209,28 @@ test("inventory changes preserve abilities and scenario export is valid JSON", a
     browser.HTMLAnchorElement.prototype.click = originalClick;
   }
 });
+
+test("blank health stays unknown and restoring a draft identifies it as custom", async () => {
+  await mount();
+  await numeric("Health", "");
+  await flush();
+  expect(request.graphs[0].players[0].health).toBeNull();
+  expect(request.graphs[0].players[0].is_alive).toBe(true);
+  expect(document.querySelector(".hero-health")!.textContent).toContain("—");
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 340));
+  });
+  await act(() => root!.unmount());
+  document.body.innerHTML = '<div id="test-root"></div>';
+  root = createRoot(document.getElementById("test-root")!);
+  await act(() => root!.render(<App />));
+  await flush();
+  expect(
+    (
+      document.querySelector(
+        'select[aria-label="Scenario preset"]',
+      ) as HTMLSelectElement
+    ).value,
+  ).toBe("custom");
+  expect(request.graphs[0].players[0].health).toBeNull();
+});

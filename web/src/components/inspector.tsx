@@ -165,7 +165,10 @@ export function Inspector({
             </div>
             <Toggle
               label="Alive"
-              checked={node.is_alive !== false && number(node, "health") > 0}
+              checked={
+                node.is_alive !== false &&
+                (node.health == null || number(node, "health") > 0)
+              }
               onChange={(alive) =>
                 patch(
                   setHealth(node, alive ? number(node, "max_health", 650) : 0),
