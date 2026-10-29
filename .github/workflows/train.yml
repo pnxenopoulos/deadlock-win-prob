@@ -293,3 +293,14 @@ jobs:
           fi
           gh release edit "$TAG" --draft=false --latest
           gh release view "$TAG" --json url --jq .url >> "$GITHUB_STEP_SUMMARY"
+
+  website:
+    name: Deploy scenario editor with this model
+    needs: [train, release]
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/pages.yml
+    with:
+      model_version: ${{ needs.train.outputs.model_version }}

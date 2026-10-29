@@ -458,3 +458,43 @@ To run all export tests locally:
 ```bash
 uv run --locked --extra export pytest
 ```
+
+
+## Scenario website
+
+`web/` is a static scenario editor in the style of deadlock.nyc. It runs the
+released ONNX model locally in a Web Worker, with WebGPU and a CPU fallback.
+No replay upload or server inference is needed. The map, hero portraits, and
+item icons are reused from deadlock.nyc; game assets remain Valve's property.
+See `web/public/NOTICE.txt` for provenance.
+
+```bash
+cd web
+bun install --frozen-lockfile
+bun run model          # download and checksum-verify the latest compatible release
+bun run dev            # loopback-only development server
+bun test
+bun run build          # output: web/dist
+```
+
+The editor supports hero placement and recorded stats, inventory upgrade tokens,
+objective health/destruction, zipline ownership on the real directed topology,
+match time, Mid Boss state, JSON import/export, a local saved draft, and baseline
+comparisons. Three identity-free replay snapshots supply starting presets. Item
+edits preserve non-item upgrades and leave item-count/baseline fields missing,
+matching the current no-catalog model; stats and economy are edited separately.
+Hero swaps clear hero-specific ability tokens. Blank numeric fields stay missing.
+The map/catalog template is a particular game version, not a universal patch map.
+
+`.github/workflows/pages.yml` builds and deploys to GitHub Pages on website
+changes or manual dispatch. Configure this repository's Pages source as
+**GitHub Actions**. The model release workflow calls this same deployment after
+publishing a validated model, passing its exact version. This explicit call is
+needed because releases created with `GITHUB_TOKEN` do not trigger another
+release-event workflow. Each site deployment bundles the model, manifest, and
+encoder together from checksum-verified release assets; compatible models are
+not downloaded directly from GitHub by visitors. Unsupported feature schemas
+fail the build rather than silently using the wrong encoder.
+
+Scenarios are conditional predictions, not combat simulations or causal
+estimates. Unusual or inconsistent states can be outside the training distribution.

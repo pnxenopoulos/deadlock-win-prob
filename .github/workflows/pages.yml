@@ -1,0 +1,59 @@
+name: Publish scenario website
+
+on:
+  push:
+    branches: [main]
+    paths: ['web/**', '.github/workflows/pages.yml']
+  workflow_dispatch:
+    inputs:
+      model_version:
+        description: Model release tag, or latest
+        default: latest
+        type: string
+  workflow_call:
+    inputs:
+      model_version:
+        default: latest
+        type: string
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: scenario-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: actions/configure-pages@v5
+      - run: bun install --frozen-lockfile
+      - run: bun test
+      - name: Bundle a verified model release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          DWP_MODEL_VERSION: ${{ inputs.model_version || 'latest' }}
+        run: bun run model
+      - run: bun run build
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/dist
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@v5
+        id: deploy
