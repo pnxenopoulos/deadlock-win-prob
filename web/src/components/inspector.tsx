@@ -516,6 +516,7 @@ export function Inspector({
             <div className="field-grid">
               <NumberField
                 label="Minutes"
+                immediate
                 value={Math.floor(time / 60)}
                 min={0}
                 max={179}
@@ -525,6 +526,7 @@ export function Inspector({
               />
               <NumberField
                 label="Seconds"
+                immediate
                 value={Math.floor(time % 60)}
                 min={0}
                 max={59}

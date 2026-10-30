@@ -21,6 +21,7 @@ export function NumberField({
   max,
   step = 1,
   unit,
+  immediate = false,
 }: {
   label: string;
   value: unknown;
@@ -29,6 +30,7 @@ export function NumberField({
   max?: number;
   step?: number;
   unit?: string;
+  immediate?: boolean;
 }) {
   const [draft, setDraft] = useState(
     typeof value === "number" ? String(Math.round(value * 100) / 100) : "",
@@ -59,7 +61,14 @@ export function NumberField({
           max={max}
           step={step}
           placeholder="Unknown"
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            const n = e.target.valueAsNumber;
+            if (immediate && Number.isFinite(n))
+              onChange(
+                Math.min(max ?? Infinity, Math.max(min ?? -Infinity, n)),
+              );
+          }}
           onBlur={commit}
           onKeyDown={(e) => {
             if (e.key === "Enter") e.currentTarget.blur();

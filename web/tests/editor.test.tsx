@@ -234,3 +234,30 @@ test("blank health stays unknown and restoring a draft identifies it as custom",
   ).toBe("custom");
   expect(request.graphs[0].players[0].health).toBeNull();
 });
+
+test("match-time boxes update inference immediately without committing unrelated numeric drafts", async () => {
+  await mount();
+  const oldHealth = request.graphs[0].players[0].health;
+  const type = async (label: string, value: string) => {
+    const input = document.querySelector(
+      `input[aria-label="${label}"]`,
+    ) as HTMLInputElement;
+    await act(() => {
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      )!.set!.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flush();
+  };
+  await type("Health", "100");
+  expect(request.graphs[0].players[0].health).toBe(oldHealth);
+  await click(document.querySelector(".time-control button"));
+  await type("Minutes", "30");
+  expect(request.graphs[0].global_info.elapsed_seconds).toBe(1800);
+  expect(request.graphs[0].elapsed_seconds).toBe(1800);
+  expect(request.graphs[0].tick).toBe(1800 * 64);
+  await type("Seconds", "45");
+  expect(request.graphs[0].global_info.elapsed_seconds).toBe(1845);
+});
