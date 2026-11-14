@@ -169,6 +169,29 @@ def test_cli_runs_the_pipeline(
     assert json.loads((output / "run.json").read_text())["data"]["every"] == 2048
 
 
+def test_kumo_cli_defaults_to_heroes_and_items(
+    matches: list[ReplayMatch], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    train = Mock(return_value={"test": SimpleNamespace(log_loss=0.5, ece=0.1)})
+    monkeypatch.setattr("dwp.cli.train.prepare_matches", Mock(return_value=matches))
+    monkeypatch.setattr("dwp.ml.tabular_training.train_tabular", train)
+
+    main(
+        [
+            "--model",
+            "kumo",
+            "--data-version",
+            "6861",
+            "--output",
+            str(tmp_path / "kumo"),
+        ]
+    )
+
+    assert train.call_args.kwargs["features"] == "heroes-items"
+
+
 @pytest.mark.parametrize(
     "options",
     [
@@ -179,6 +202,7 @@ def test_cli_runs_the_pipeline(
         ["--hidden-dim", "15"],
         ["--match-modes", "bogus"],
         ["--candidate-limit", "1"],
+        ["--model", "kumo"],
     ],
 )
 def test_cli_rejects_invalid_options_before_network(

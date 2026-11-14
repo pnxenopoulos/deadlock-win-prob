@@ -1,9 +1,26 @@
 name: Train win probability model
-run-name: Train on up to ${{ inputs.matches }} matches from ${{ inputs.days }} day(s)
+run-name: Train ${{ inputs.model }} ${{ inputs.model_version }} on up to ${{ inputs.matches }} matches from ${{ inputs.days }} day(s)
 
 on:
   workflow_dispatch:
     inputs:
+      model:
+        description: Model to train
+        type: choice
+        options: [graph, kumo]
+        default: graph
+      model_version:
+        description: Model version (for example v1.0.0)
+        type: string
+        required: true
+      features:
+        description: Feature set (Kumo only)
+        type: choice
+        options: [heroes-items, heroes, baseline]
+        default: heroes-items
+      data_version:
+        description: Matching boon-data client version (required for Kumo heroes-items)
+        type: string
       days:
         description: Parquet build-age window in days
         type: number
@@ -51,6 +68,10 @@ on:
         options: [Normal, OneVsOneTest, Sandbox, StreetBrawl, ExploreNYC, Internal]
         default: Normal
 
+concurrency:
+  group: train-${{ inputs.model }}-${{ inputs.model_version }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
@@ -78,6 +99,26 @@ jobs:
         with:
           python-version: "3.14"
           enable-cache: false
+      - name: Validate model and version
+        env:
+          MODEL: ${{ inputs.model }}
+          FEATURES: ${{ inputs.features }}
+          DATA_VERSION: ${{ inputs.data_version }}
+          MATCHES: ${{ inputs.matches }}
+          MODEL_VERSION: ${{ inputs.model_version }}
+        run: |
+          if [[ ! "$MODEL_VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Expected a version such as v1.0.0" >&2
+            exit 1
+          fi
+          if [ "$MODEL" = kumo ] && [ "$MATCHES" -lt 4 ]; then
+            echo "Kumo needs at least four matches." >&2
+            exit 1
+          fi
+          if [ "$MODEL" = kumo ] && [ "$FEATURES" = heroes-items ] && [[ ! "$DATA_VERSION" =~ ^[0-9]+$ ]]; then
+            echo "heroes-items needs a boon-data client version." >&2
+            exit 1
+          fi
       - name: Install locked dependencies
         run: uv sync --locked --no-dev
       - name: Discover and assign distinct replay candidates
@@ -176,7 +217,7 @@ jobs:
     needs: [plan, prepare]
     outputs:
       artifact_id: ${{ steps.model_artifact.outputs.artifact-id }}
-      model_version: ${{ steps.export.outputs.model_version }}
+      model_version: ${{ steps.bundle.outputs.model_version }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -188,7 +229,14 @@ jobs:
           python-version: "3.14"
           enable-cache: false
       - name: Install locked dependencies
-        run: uv sync --locked --no-dev
+        env:
+          MODEL: ${{ inputs.model }}
+        run: |
+          if [ "$MODEL" = kumo ]; then
+            uv sync --locked --no-dev --extra tabular
+          else
+            uv sync --locked --no-dev --extra export
+          fi
       - name: Download expected plan
         uses: actions/download-artifact@v8
         with:
@@ -200,8 +248,12 @@ jobs:
           pattern: parsed-graphs-${{ needs.plan.outputs.plan_id }}-*
           path: prepared
           merge-multiple: false
-      - name: Combine graphs, train, and evaluate
+      - name: Train and evaluate the selected model
         env:
+          MODEL: ${{ inputs.model }}
+          FEATURES: ${{ inputs.features }}
+          DATA_VERSION: ${{ inputs.data_version }}
+          MODEL_VERSION: ${{ inputs.model_version }}
           EPOCHS: ${{ inputs.epochs }}
           BATCH_SIZE: ${{ inputs.batch_size }}
           SEED: ${{ inputs.seed }}
@@ -223,23 +275,39 @@ jobs:
           ) &
           monitor_pid=$!
           trap 'kill "$monitor_pid" 2>/dev/null || true' EXIT
+          extra=()
+          args=()
+          output=runs/ci
+          if [ "$MODEL" = kumo ]; then
+            extra=(--extra tabular)
+            args=(--features "$FEATURES")
+            if [ "$FEATURES" = heroes-items ]; then
+              args+=(--data-version "$DATA_VERSION")
+            fi
+            output=runs/ci/model
+          fi
           /usr/bin/time -v -o training-resources.log \
-            uv run --locked --no-dev dwp-train \
+            uv run --locked --no-dev "${extra[@]}" dwp-train \
             --prepared-data prepared --plan plan/plan.json \
+            --model "$MODEL" --model-version "$MODEL_VERSION" "${args[@]}" \
             --epochs "$EPOCHS" --batch-size "$BATCH_SIZE" --seed "$SEED" \
-            --device cpu --threads 2 --output runs/ci 2>&1 | tee training.log
-      - name: Export and validate ONNX model and encoder
-        id: export
+            --device cpu --threads 2 --output "$output" 2>&1 | tee training.log
+      - name: Prepare the versioned release bundle
+        id: bundle
         env:
-          MODEL_VERSION: model-${{ github.run_id }}-${{ github.run_attempt }}
+          MODEL: ${{ inputs.model }}
+          MODEL_VERSION: ${{ inputs.model_version }}
         run: |
-          uv run --locked --no-dev --extra export dwp-export runs/ci/model.pt \
-            --output runs/ci/onnx --model-version "$MODEL_VERSION"
-          echo "model_version=$MODEL_VERSION" >> "$GITHUB_OUTPUT"
-      - name: Report held-out metrics
-        if: success()
-        run: cat runs/ci/summary.md >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload best model, ONNX bundle, metrics, plots, and logs
+          if [ "$MODEL" = graph ]; then
+            tag="model/graph-win/$MODEL_VERSION"
+            uv run --locked --no-dev --extra export dwp-export runs/ci/model.pt \
+              --output runs/ci/model --model-version "$tag"
+          else
+            tag="model/kumo-win/$MODEL_VERSION"
+          fi
+          echo "model_version=$tag" >> "$GITHUB_OUTPUT"
+          cat runs/ci/model/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload model, metrics, and logs
         id: model_artifact
         if: always()
         uses: actions/upload-artifact@v7
@@ -266,24 +334,33 @@ jobs:
         with:
           artifact-ids: ${{ needs.train.outputs.artifact_id }}
           path: artifact
-      - name: Publish versioned model and browser bundle
+      - name: Publish versioned model
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.train.outputs.model_version }}
+          MODEL: ${{ inputs.model }}
           REVISION: ${{ github.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         shell: bash
         run: |
           set -euo pipefail
-          bundle=artifact/runs/ci/onnx
-          (cd "$bundle" && sha256sum --check SHA256SUMS)
+          bundle=artifact/runs/ci/model
+          if [ "$MODEL" = graph ]; then
+            (cd "$bundle" && sha256sum --check SHA256SUMS)
+            latest=--latest
+          else
+            hash=$(jq -er '.sha256["context.parquet"]' "$bundle/manifest.json")
+            (cd "$bundle" && printf '%s  context.parquet\n' "$hash" | sha256sum --check)
+            latest=--latest=false
+          fi
           cat "$bundle/summary.md" > release-notes.md
-          printf '\nValidated ONNX export and encoder metadata for browser inference.\n\nTraining run: %s\n' "$RUN_URL" >> release-notes.md
+          printf '\nTraining run: %s\n' "$RUN_URL" >> release-notes.md
           if gh release view "$TAG" --json isDraft --jq .isDraft > release-state.txt; then
             if [ "$(cat release-state.txt)" = false ]; then
               gh release view "$TAG" --json url --jq .url >> "$GITHUB_STEP_SUMMARY"
-              exit 0
+              echo "Model release $TAG already exists. Choose a new version." >&2
+              exit 1
             fi
             # A previous upload may have stopped partway through a draft release.
             gh release upload "$TAG" "$bundle"/* --clobber
@@ -291,11 +368,12 @@ jobs:
             gh release create "$TAG" --draft --target "$REVISION" \
               --title "Win probability $TAG" --notes-file release-notes.md "$bundle"/*
           fi
-          gh release edit "$TAG" --draft=false --latest
+          gh release edit "$TAG" --draft=false "$latest"
           gh release view "$TAG" --json url --jq .url >> "$GITHUB_STEP_SUMMARY"
 
   website:
     name: Deploy scenario editor with this model
+    if: inputs.model == 'graph'
     needs: [train, release]
     permissions:
       contents: read

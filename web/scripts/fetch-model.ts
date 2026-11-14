@@ -5,7 +5,11 @@ import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 const directory = fileURLToPath(new URL("../public/model", import.meta.url));
 const version = process.env.DWP_MODEL_VERSION || "latest";
-if (version !== "latest" && !/^model-[0-9]+-[0-9]+$/.test(version))
+if (
+  version !== "latest" &&
+  !/^model\/graph-win\/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(version) &&
+  !/^model-[0-9]+-[0-9]+$/.test(version)
+)
   throw new Error("Unsupported model release tag");
 const api =
   "https://api.github.com/repos/pnxenopoulos/deadlock-win-prob/releases/" +

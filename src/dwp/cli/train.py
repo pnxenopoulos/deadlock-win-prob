@@ -15,6 +15,7 @@ from dwp.data.deadlock_api import GameMode, MatchMode
 from dwp.data.planning import read_plan
 from dwp.data.preparation import prepare_matches
 from dwp.graphs.parquet import load_graph_shards
+from dwp.ml.tabular_features import DEFAULT_FEATURE_SET
 from dwp.ml.training import TrainingConfig, train_model
 
 
@@ -71,6 +72,18 @@ def main(argv: Sequence[str] | None = None) -> None:
         type=Path,
         help="Expected preparation plan (required with --prepared-data)",
     )
+    parser.add_argument("--model", choices=("graph", "kumo"), default="graph")
+    parser.add_argument(
+        "--model-version", default="v1.0.0", help="Model version (vMAJOR.MINOR.PATCH)"
+    )
+    parser.add_argument(
+        "--features",
+        choices=("baseline", "heroes", "heroes-items"),
+        help=f"Kumo feature set (default: {DEFAULT_FEATURE_SET}). heroes-items requires --data-version.",
+    )
+    parser.add_argument(
+        "--context-rows", type=int, default=2048, help="Maximum Kumo context rows"
+    )
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument(
         "--batch-size",
@@ -95,6 +108,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         default=Path("runs") / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ"),
     )
     args = parser.parse_args(argv)
+    features = args.features or DEFAULT_FEATURE_SET
     try:
         config = TrainingConfig(
             epochs=args.epochs,
@@ -119,6 +133,16 @@ def main(argv: Sequence[str] | None = None) -> None:
             raise ValueError(
                 "days/every/max-snapshots/threads must be positive and matches >= 3"
             )
+        if args.model == "kumo" and args.prepared_data is None and args.matches < 4:
+            raise ValueError("Kumo requires --matches >= 4")
+        if (
+            args.model == "kumo"
+            and features == "heroes-items"
+            and not args.data_version
+        ):
+            raise ValueError("heroes-items requires --data-version")
+        if args.model == "graph" and args.features not in (None, "baseline"):
+            raise ValueError("--features applies only to Kumo")
         if args.candidate_limit is not None and args.candidate_limit < args.matches:
             raise ValueError("candidate-limit must be at least matches")
         if (args.prepared_data is None) != (args.plan is None):
@@ -152,9 +176,26 @@ def main(argv: Sequence[str] | None = None) -> None:
             candidate_limit=args.candidate_limit,
             match_modes=args.match_modes,
             game_modes=args.game_modes,
+            data_version=args.data_version if args.model == "graph" else None,
+        )
+    if args.model == "kumo":
+        from dwp.ml.tabular_training import train_tabular
+
+        result = train_tabular(
+            matches,
+            args.output,
+            model_version=f"model/kumo-win/{args.model_version}",
+            device=None if args.device == "auto" else args.device,
+            seed=config.seed,
+            bins=config.bins,
+            train_fraction=config.train_fraction,
+            validation_fraction=config.validation_fraction,
+            context_rows=args.context_rows,
+            features=features,
             data_version=args.data_version,
         )
-    result = train_model(matches, args.output, config, data_config=data_config)
+    else:
+        result = train_model(matches, args.output, config, data_config=data_config)
     print(
         json.dumps(
             {

@@ -313,7 +313,8 @@ custom plots. Both functions accept the same interval and catalog options.
 
 The manual GitHub Actions workflow is `.github/workflows/train.yml`. Once it is
 on the default branch, select **Actions → Train win probability model → Run
-workflow**. In addition to days, matches, epochs, sampling, batch size, seed, and
+workflow**. Select a model and enter a version such as `v1.0.0`. In addition to days,
+matches, epochs, sampling, batch size, seed, and
 mode inputs, it accepts **workers** (default 4) and **max_parallel** (default 4).
 The workflow runs a planner, then a preparation matrix capped by `max_parallel`,
 then one training/evaluation job after every preparation job succeeds. It uses
@@ -444,10 +445,10 @@ hashes. Export does not port Boon's feature extraction into the viewer. Match
 the parser/catalog version and the full feature contract before inference.
 WebGPU execution requires separate operator-coverage and performance validation.
 
-Every successful manual training workflow exports the browser bundle and adds
+Each successful manual graph training run exports the browser bundle and adds
 it to the usual Actions artifact. A separate release job checks its checksums,
 uploads the individual bundle files and ZIP, then publishes the GitHub release
-`model-<run_id>-<run_attempt>` and marks it latest. Only that job receives
+`model/graph-win/v1.0.0` (using the requested version) and marks it latest. Only that job receives
 `contents: write`; preparation/training retain read-only repository permissions.
 The release is created as a draft until asset upload succeeds. Retries can repair
 a partial draft; already-published versions are left unchanged. Release assets
@@ -459,6 +460,83 @@ To run all export tests locally:
 uv run --locked --extra export pytest
 ```
 
+
+## Train and use KumoTabular small for Deadlock
+
+```bash
+uv run --locked --extra tabular dwp-train \
+  --model kumo --model-version v1.1.0 --days 1 --matches 50 \
+  --data-version 6861 --output runs/kumo-v1.1.0
+```
+
+Use `--prepared-data prepared --plan plan.json` to reuse an existing set of
+shards. In GitHub Actions, select `kumo`, enter a model version such as `v1.1.0`,
+and set `data_version` to the boon-data client version for those replays.
+The release tag for that model version is `model/kumo-win/v1.1.0`. The release contains the compact
+context, its manifest, and held-out scores. The preparation shards stay in
+the workflow artifacts.
+
+KumoTabular small predicts whether Hidden King or Archmother wins. It uses
+one row per sampled tick. Features include each team's current and spent
+souls, gold net worth, living heroes, mean health fraction and level, and
+the health and standing counts of walkers, barracks, shrines, and patrons.
+Patron phase, mid-boss state, and elapsed active replay time also enter the
+model. Boon can reconstruct the HUD clock using the final game state, so
+Kumo uses pause-adjusted time from recording start.
+
+The replay pipeline drops paused and post-victory ticks and matches without
+a valid team winner. Kumo samples a context of up to 2,048 rows from training
+matches. Validation and test matches are separate. Use at least four matches
+and include both winning sides in the training split.
+
+The default, `heroes-items`, adds hero lineups and current item counts per side,
+shop category, and tier to the baseline. It requires `--data-version` with the
+boon-data client version that matches the replays. A missing or unclassified
+inventory leaves the team's item counts null.
+
+Use `--features` or the Actions `features` input to select another feature set.
+
+- `baseline` uses the team economy, health, time, and objective features above.
+- `heroes` adds one presence column per hero and side. Training matches set the hero vocabulary.
+
+To compare feature sets, reuse the same `--prepared-data`, `--plan`, seed, and
+split fractions. Use a different output directory for each run. Each summary
+reports full-match scores and scores for ticks before 10 minutes of active
+recording time. Within each score, all represented matches have equal weight.
+
+For example, add lineups and item counts to an existing set of shards:
+
+```bash
+uv run --locked --extra tabular dwp-train \
+  --model kumo --model-version v1.1.0 \
+  --data-version 6861 --prepared-data prepared --plan plan.json \
+  --output runs/kumo-v1.1.0
+```
+
+Use the manifest and context from the same bundle. The manifest records the
+feature order, hero vocabulary, and the version and checksum of the item
+catalog. Loading the model can download NVIDIA's pretrained weights.
+
+```python
+from pathlib import Path
+
+from boon import Demo
+
+from dwp.graphs.snapshots import iter_graphs
+from dwp.ml.tabular import feature_columns, predict_probabilities, tabular_features
+from dwp.ml.tabular_training import load_tabular_features, load_tabular_model
+
+demo = Demo("match.dem", preload=False)
+bundle = Path("runs/kumo-v1.1.0")
+lineups = load_tabular_features(bundle)
+model = load_tabular_model(bundle)
+end = demo.game_over_tick
+graphs = [g for g in iter_graphs(demo, every=4096, end_tick=end - 1 if end else None)
+          if g.players.height]
+states = tabular_features(graphs, lineups)
+scores = predict_probabilities(model, states, columns=feature_columns(lineups))
+print(states.select("tick").hstack(scores))
+```
 
 ## Scenario website
 
