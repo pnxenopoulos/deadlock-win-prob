@@ -16,6 +16,7 @@ import { Inspector } from "./components/inspector";
 import { Prediction } from "./components/prediction";
 import { Roster } from "./components/roster";
 import { ScenarioMap, type MapMode } from "./components/scenario-map";
+import { bundledGraph, graphModels } from "./ml/models";
 import { usePrediction } from "./ml/use-prediction";
 import type { RawGraph, RawNode } from "./ml/types";
 import {
@@ -59,8 +60,20 @@ export function App() {
   const [info, setInfo] = useState(false),
     file = useRef<HTMLInputElement>(null),
     dialog = useRef<HTMLDialogElement>(null);
-  const estimate = usePrediction(scenario.graph, baseline),
+  const [models, setModels] = useState(() => [bundledGraph()]),
+    [modelId, setModelId] = useState("graph");
+  const model = models.find((entry) => entry.id === modelId) ?? models[0];
+  const estimate = usePrediction(scenario.graph, baseline, model),
     graph = scenario.graph;
+  useEffect(() => {
+    const controller = new AbortController();
+    void graphModels(controller.signal)
+      .then((options) => {
+        if (!controller.signal.aborted) setModels(options);
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, []);
   useEffect(() => {
     document.documentElement.dataset.theme = dark ? "dark" : "light";
     try {
@@ -258,6 +271,9 @@ export function App() {
           <aside className="roster-pane">
             <Prediction
               estimate={estimate}
+              models={models}
+              modelId={model.id}
+              onModelChange={setModelId}
               hasBaseline={baseline !== null}
               onPin={() => {
                 setBaseline(clone(graph));
@@ -338,8 +354,8 @@ export function App() {
               </span>
             </div>
             <p className="scenario-note">
-              Estimates are most useful for realistic match states. All
-              predictions run on your device.
+              Estimates are most useful for realistic match states. Predictions
+              run on your device.
             </p>
           </div>
           <Inspector

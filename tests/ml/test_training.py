@@ -192,6 +192,36 @@ def test_kumo_cli_defaults_to_heroes_and_items(
     assert train.call_args.kwargs["features"] == "heroes-items"
 
 
+def test_kumo_cli_forwards_context_and_estimator_settings(
+    matches: list[ReplayMatch], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    train = Mock(return_value={"test": SimpleNamespace(log_loss=0.5, ece=0.1)})
+    monkeypatch.setattr("dwp.cli.train.prepare_matches", Mock(return_value=matches))
+    monkeypatch.setattr("dwp.ml.tabular_training.train_tabular", train)
+
+    main(
+        [
+            "--model",
+            "kumo",
+            "--data-version",
+            "6861",
+            "--context-rows",
+            "512",
+            "--num-estimators",
+            "3",
+            "--output",
+            str(tmp_path / "kumo"),
+        ]
+    )
+
+    assert (
+        train.call_args.kwargs["context_rows"],
+        train.call_args.kwargs["num_estimators"],
+    ) == (512, 3)
+
+
 @pytest.mark.parametrize(
     "options",
     [
@@ -203,6 +233,8 @@ def test_kumo_cli_defaults_to_heroes_and_items(
         ["--match-modes", "bogus"],
         ["--candidate-limit", "1"],
         ["--model", "kumo"],
+        ["--model", "kumo", "--features", "baseline", "--context-rows", "1"],
+        ["--model", "kumo", "--features", "baseline", "--num-estimators", "0"],
     ],
 )
 def test_cli_rejects_invalid_options_before_network(

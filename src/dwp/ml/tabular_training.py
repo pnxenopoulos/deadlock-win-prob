@@ -32,6 +32,8 @@ if TYPE_CHECKING:
 
 CONTEXT_FILE = "context.parquet"
 EARLY_GAME_SECONDS = 600
+DEFAULT_CONTEXT_ROWS = 2048
+DEFAULT_NUM_ESTIMATORS = 8
 
 
 def _features(matches: Sequence[ReplayMatch], lineups: LineupFeatures) -> pl.DataFrame:
@@ -83,8 +85,8 @@ def train_tabular(
     bins: int = 10,
     train_fraction: float = 0.8,
     validation_fraction: float = 0.1,
-    context_rows: int = 2048,
-    num_estimators: int = 8,
+    context_rows: int = DEFAULT_CONTEXT_ROWS,
+    num_estimators: int = DEFAULT_NUM_ESTIMATORS,
     features: FeatureSet = DEFAULT_FEATURE_SET,
     data_version: str | None = None,
 ) -> dict[str, ProbabilityMetrics]:
@@ -107,6 +109,8 @@ def train_tabular(
         raise ValueError("heroes-items requires a matching boon-data version")
     if context_rows < 2:
         raise ValueError("context_rows must be at least 2")
+    if num_estimators < 1:
+        raise ValueError("num_estimators must be at least 1")
     if output.exists():
         raise ValueError(f"output already exists: {output}")
     by_id = {match.match_id: match for match in matches}

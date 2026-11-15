@@ -1,23 +1,26 @@
 import { encodeGraphs, validateEncoder, validateManifest } from "./features";
+import type { ModelOption } from "./models";
 import { createRuntime, fallBackToCPU, type Runtime } from "./runtime";
 import type { Encoder, Manifest, RawGraph } from "./types";
 interface Request {
   id: number;
   graphs: RawGraph[];
-  base: string;
+  model: ModelOption;
 }
 let pending: Request | null = null,
   busy = false;
 let loaded:
   | Promise<{ runtime: Runtime; encoder: Encoder; manifest: Manifest }>
   | undefined;
-async function load(base: string) {
+async function load(base: string, version?: string) {
   const response = await fetch(new URL("manifest.json", base), {
     cache: "no-cache",
   });
   if (!response.ok) throw new Error("The model is unavailable. Please retry.");
   const manifest = (await response.json()) as Manifest;
   validateManifest(manifest);
+  if (version && manifest.model_version !== version)
+    throw new Error("The selected model version changed. Reload this page.");
   const verified = async (name: string) => {
     const r = await fetch(
       new URL(`${name}?v=${encodeURIComponent(manifest.model_version)}`, base),
@@ -50,8 +53,10 @@ async function drain() {
     const request = pending;
     pending = null;
     try {
+      const model = request.model;
       const { runtime, encoder, manifest } = await (loaded ??= load(
-        request.base,
+        model.base,
+        model.version,
       ).catch((e) => {
         loaded = undefined;
         throw e;

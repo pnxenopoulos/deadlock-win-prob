@@ -1,6 +1,7 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import { act } from "react";
+import type { ModelOption } from "../src/ml/models";
 import type { RawGraph } from "../src/ml/types";
 
 const browser = new Window({ url: "http://localhost/" });
@@ -31,7 +32,7 @@ Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
   configurable: true,
 });
 process.env.BASE_URL = "/";
-let request: { id: number; graphs: RawGraph[] };
+let request: { id: number; graphs: RawGraph[]; model: ModelOption };
 class WorkerStub {
   onmessage?: (e: { data: unknown }) => void;
   onerror?: () => void;
@@ -44,7 +45,7 @@ class WorkerStub {
         data: {
           id: value.id,
           probabilities: value.graphs.map(() => 0.6),
-          modelVersion: "test-only-worker-stub",
+          modelVersion: value.model.version ?? "test-only-worker-stub",
         },
       });
   }
@@ -56,6 +57,17 @@ Object.defineProperty(globalThis, "Worker", {
   value: WorkerStub,
   configurable: true,
 });
+const originalFetch = globalThis.fetch;
+globalThis.fetch = Object.assign(async (input: RequestInfo | URL): Promise<Response> => {
+  const url = new URL(String(input));
+  if (url.pathname.endsWith("/model/models.json")) {
+    return Response.json([
+      { version: "model/graph-win/v1.2.0", path: "" },
+      { version: "model/graph-win/v1.1.0", path: "previous/" },
+    ]);
+  }
+  throw new Error("Unexpected fetch in editor test: " + url.href);
+}, { preconnect: originalFetch.preconnect });
 const { createRoot } = await import("react-dom/client");
 const { App } = await import("../src/App");
 let root: ReturnType<typeof createRoot> | undefined;
@@ -68,7 +80,7 @@ async function mount() {
   localStorage.clear();
   document.body.innerHTML = '<div id="test-root"></div>';
   root = createRoot(document.getElementById("test-root")!);
-  await act(() => root!.render(<App />));
+  await act(async () => { root!.render(<App />); });
   await flush();
 }
 afterEach(async () => {
@@ -76,6 +88,7 @@ afterEach(async () => {
   root = undefined;
   await browser.happyDOM.cancelAsync();
 });
+afterAll(() => { globalThis.fetch = originalFetch; });
 function click(element: Element | null) {
   if (!element) throw new Error("Missing control");
   return act(() =>
@@ -132,6 +145,20 @@ test("the editor renders a full roster and sends edits to the prediction worker"
   expect(request.graphs[0].players[0].health).toBe(0);
   expect(request.graphs[0].players[0].is_alive).toBe(false);
 });
+test("switching models reruns the current scenario and its pinned baseline", async () => {
+  await mount();
+  expect(request.model).toMatchObject({ version: "model/graph-win/v1.2.0" });
+  await click(document.querySelector(".baseline-button"));
+  const initial = request.graphs[0];
+  await select("Win probability model", "graph-previous");
+  await flush();
+  expect(request.model).toMatchObject({
+    version: "model/graph-win/v1.1.0",
+    base: "http://localhost/model/previous/",
+  });
+  expect(request.graphs).toEqual([initial, initial]);
+});
+
 test("objective and world controls update the actual graph supplied to inference", async () => {
   await mount();
   await click(document.querySelector(".map-objective"));
@@ -223,7 +250,7 @@ test("blank health stays unknown and restoring a draft identifies it as custom",
   await act(() => root!.unmount());
   document.body.innerHTML = '<div id="test-root"></div>';
   root = createRoot(document.getElementById("test-root")!);
-  await act(() => root!.render(<App />));
+  await act(async () => { root!.render(<App />); });
   await flush();
   expect(
     (

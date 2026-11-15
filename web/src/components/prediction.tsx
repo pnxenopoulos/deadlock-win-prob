@@ -1,12 +1,19 @@
 import { Activity, LoaderCircle, Pin, X } from "lucide-react";
+import type { ModelOption } from "../ml/models";
 import type { Prediction as Estimate } from "../ml/use-prediction";
 export function Prediction({
   estimate,
+  models,
+  modelId,
+  onModelChange,
   onPin,
   onClear,
   hasBaseline,
 }: {
   estimate: Estimate & { retry: () => void };
+  models: ModelOption[];
+  modelId: string;
+  onModelChange: (id: string) => void;
   onPin: () => void;
   onClear: () => void;
   hasBaseline: boolean;
@@ -24,6 +31,16 @@ export function Prediction({
         WIN PROBABILITY
         <span className={"status-dot " + (available ? "ready" : "")} />
       </div>
+      <select
+        className="prediction-model"
+        aria-label="Win probability model"
+        value={modelId}
+        onChange={(event) => onModelChange(event.target.value)}
+      >
+        {models.map((model) => (
+          <option key={model.id} value={model.id}>{model.label}</option>
+        ))}
+      </select>
       {estimate.error ? (
         <div className="prediction-error" role="alert">
           <p>{estimate.error}</p>

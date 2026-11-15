@@ -16,6 +16,10 @@ from dwp.data.planning import read_plan
 from dwp.data.preparation import prepare_matches
 from dwp.graphs.parquet import load_graph_shards
 from dwp.ml.tabular_features import DEFAULT_FEATURE_SET
+from dwp.ml.tabular_training import (
+    DEFAULT_CONTEXT_ROWS,
+    DEFAULT_NUM_ESTIMATORS,
+)
 from dwp.ml.training import TrainingConfig, train_model
 
 
@@ -82,7 +86,16 @@ def main(argv: Sequence[str] | None = None) -> None:
         help=f"Kumo feature set (default: {DEFAULT_FEATURE_SET}). heroes-items requires --data-version.",
     )
     parser.add_argument(
-        "--context-rows", type=int, default=2048, help="Maximum Kumo context rows"
+        "--context-rows",
+        type=int,
+        default=DEFAULT_CONTEXT_ROWS,
+        help="Maximum Kumo context rows",
+    )
+    parser.add_argument(
+        "--num-estimators",
+        type=int,
+        default=DEFAULT_NUM_ESTIMATORS,
+        help="Number of Kumo ensemble estimators",
     )
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument(
@@ -133,8 +146,13 @@ def main(argv: Sequence[str] | None = None) -> None:
             raise ValueError(
                 "days/every/max-snapshots/threads must be positive and matches >= 3"
             )
-        if args.model == "kumo" and args.prepared_data is None and args.matches < 4:
-            raise ValueError("Kumo requires --matches >= 4")
+        if args.model == "kumo":
+            if args.prepared_data is None and args.matches < 4:
+                raise ValueError("Kumo requires --matches >= 4")
+            if args.context_rows < 2 or args.num_estimators < 1:
+                raise ValueError(
+                    "Kumo requires --context-rows >= 2 and --num-estimators >= 1"
+                )
         if (
             args.model == "kumo"
             and features == "heroes-items"
@@ -191,6 +209,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             train_fraction=config.train_fraction,
             validation_fraction=config.validation_fraction,
             context_rows=args.context_rows,
+            num_estimators=args.num_estimators,
             features=features,
             data_version=args.data_version,
         )

@@ -486,7 +486,9 @@ Kumo uses pause-adjusted time from recording start.
 
 The replay pipeline drops paused and post-victory ticks and matches without
 a valid team winner. Kumo samples a context of up to 2,048 rows from training
-matches. Validation and test matches are separate. Use at least four matches
+matches and uses eight ensemble estimators by default. Set `context_rows` and
+`num_estimators` in Actions, or use `--context-rows` and `--num-estimators`
+locally. Validation and test matches are separate. Use at least four matches
 and include both winning sides in the training split.
 
 The default, `heroes-items`, adds hero lineups and current item counts per side,
@@ -541,7 +543,9 @@ print(states.select("tick").hstack(scores))
 ## Scenario website
 
 `web/` is a static scenario editor in the style of deadlock.nyc. It runs the
-released ONNX model locally in a Web Worker, with WebGPU and a CPU fallback.
+released graph models locally in a Web Worker, with WebGPU and a CPU fallback.
+Use **Win probability model** to select a bundled graph release. Changing the
+release recalculates the active scenario and its pinned baseline in the browser.
 No replay upload or server inference is needed. The map, hero portraits, and
 item icons are reused from deadlock.nyc; game assets remain Valve's property.
 See `web/public/NOTICE.txt` for provenance.
