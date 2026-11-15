@@ -42,6 +42,7 @@ class TrainingConfig:
             hidden_dim=128, num_heads=4, num_layers=3, dropout=0.1
         )
     )
+    wave_pressure: bool = True
 
     def __post_init__(self) -> None:
         if min(self.epochs, self.batch_size, self.bins) < 1:
@@ -186,7 +187,10 @@ def train_model(
         sum(len(m.graphs) for m in groups["train"]),
         len(groups["train"]),
     )
-    encoder = GraphEncoder.fit(g for match in groups["train"] for g in match.graphs)
+    encoder = GraphEncoder.fit(
+        (g for match in groups["train"] for g in match.graphs),
+        wave_pressure=config.wave_pressure,
+    )
     logger.info(
         "Encoder fitted; training on %s with batch size %d", device, config.batch_size
     )

@@ -140,8 +140,10 @@ so it is excluded from graph/model features and sampling decisions. It is used
 only for post-inference display labels in the prediction table, where unavailable
 match clocks stay null. An unobserved mid-boss state stays null.
 
-Useful next features for win probability are ordinary ability/item cooldowns,
-trooper and lane pressure, urn/Rift state, and team-specific visibility. Player
+For direct snapshot and encoder calls, set `wave_pressure=True` in
+`iter_graphs()` and `GraphEncoder.fit()` to use team and lane wave features.
+Useful next features include ability and item cooldowns, urn and Rift state,
+and team-specific visibility. Player
 level/economy/barriers and objective phase/max health are already retained. These
 graphs describe the recorded replay state; a team-view model would also need
 explicit observation masks.
@@ -389,6 +391,28 @@ size; also examine reliability plots and scores by game time. These are
 calibration diagnostics; they do not fit a probability calibration transform.
 
 
+## Compare graph models with and without trooper wave pressure
+
+```bash
+dwp-prepare plan --matches 120 --workers 1 --output wave-plan.json
+dwp-prepare shard --plan wave-plan.json --shard-id 0 --output prepared-waves
+dwp-train --plan wave-plan.json --prepared-data prepared-waves --seed 42 --no-wave-pressure --output runs/graph-base
+dwp-train --plan wave-plan.json --prepared-data prepared-waves --seed 42 --output runs/graph-waves
+```
+
+Graph training uses wave pressure by default in the CLI and GitHub Actions.
+Use `--no-wave-pressure` for a baseline run or to reuse a plan without wave data.
+The example runs use the same match split and snapshot ticks. Read the test
+scores in each run's `metrics.json`. The wave run adds three values per team and lane to
+the global node. These values are live trooper count, total wave health, and the
+distance from the closest trooper to the enemy Patron in the horizontal plane.
+An empty wave has zero count and health and a missing distance. The distance
+uses an observed Patron position and gives a measure of advance toward the base.
+
+Use `predict_win_probabilities()` with the saved encoder to read the required
+features automatically. The replay viewer reads wave data for models that use it.
+In the scenario editor, use **Match state → Trooper waves** to change the values.
+
 ## ONNX export and model releases
 
 Export an existing best-validation checkpoint without retraining:
@@ -561,8 +585,9 @@ bun run build          # output: web/dist
 
 The editor supports hero placement and recorded stats, inventory upgrade tokens,
 objective health/destruction, zipline ownership on the real directed topology,
-match time, Mid Boss state, JSON import/export, a local saved draft, and baseline
-comparisons. Three identity-free replay snapshots supply starting presets. Item
+match time, Mid Boss state, wave pressure, JSON import/export, a local saved
+draft, and baseline comparisons. Three identity-free replay snapshots supply
+starting presets. Item
 edits preserve non-item upgrades and leave item-count/baseline fields missing,
 matching the current no-catalog model; stats and economy are edited separately.
 Hero swaps clear hero-specific ability tokens. Blank numeric fields stay missing.

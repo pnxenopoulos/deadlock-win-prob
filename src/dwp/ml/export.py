@@ -20,7 +20,7 @@ from dwp.ml.features import (
     _TEAMS,
     CATEGORICAL_FEATURES,
     NODE_TYPES,
-    NUMERIC_FEATURES,
+    GraphEncoder,
     GraphTensors,
 )
 from dwp.ml.model import HeterogeneousGraphTransformer
@@ -89,15 +89,16 @@ def _probe(
     counts: tuple[int, int, int, int],
     batch: int,
     tokens: int,
-    vocabularies: dict[str, dict[str, int]],
+    encoder: GraphEncoder,
     seed: int,
 ) -> tuple[Tensor, ...]:
     """Deterministic, label-free probes, including an isolated global-only graph."""
+    vocabularies = encoder.vocabularies
     rng = torch.Generator().manual_seed(seed)
     nodes = sum(counts)
     numeric = [
         torch.randn(batch, n, len(columns) * 2, generator=rng)
-        for n, columns in zip(counts, NUMERIC_FEATURES)
+        for n, columns in zip(counts, encoder.numeric_features, strict=True)
     ]
     for values in numeric:
         values[:, :, values.shape[-1] // 2 :] = (
@@ -166,7 +167,7 @@ def export_onnx(
     )
     wrapper = _OnnxModel(model).eval()
     output.mkdir(parents=True, exist_ok=False)
-    example = _probe((1, 3, 2, 4), 2, 3, encoder.vocabularies, 0)
+    example = _probe((1, 3, 2, 4), 2, 3, encoder, 0)
     dim = torch.export.Dim
     b, p, o, z, t = (
         dim(name, min=1)
@@ -219,7 +220,7 @@ def export_onnx(
             ),
             1,
         ):
-            values = _probe(counts, batch, tokens, encoder.vocabularies, seed)
+            values = _probe(counts, batch, tokens, encoder, seed)
             expected = wrapper(values).numpy()
             actual = np.asarray(
                 session.run(
@@ -235,7 +236,7 @@ def export_onnx(
     metadata = {
         "format_version": 1,
         "node_type_order": list(NODE_TYPES),
-        "numeric_features": [list(names) for names in NUMERIC_FEATURES],
+        "numeric_features": [list(names) for names in encoder.numeric_features],
         "categorical_features": [list(names) for names in CATEGORICAL_FEATURES],
         "means": [v.tolist() for v in encoder.means],
         "scales": [v.tolist() for v in encoder.scales],

@@ -12,6 +12,7 @@ from numpy.typing import NDArray
 from torch import Tensor
 
 from dwp.graphs.snapshots import GraphSnapshot
+from dwp.graphs.waves import WAVE_FEATURES
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,7 @@ NUMERIC_FEATURES = (
     # Zipline
     ("x", "y", "z", "capturable", "cumulative_distance"),
 )
+WAVE_NUMERIC_FEATURES = (NUMERIC_FEATURES[0] + WAVE_FEATURES, *NUMERIC_FEATURES[1:])
 CATEGORICAL_FEATURES = (
     # Global
     (),
@@ -176,13 +178,22 @@ class GraphEncoder:
     means: tuple[NDArray[np.float64], ...]
     scales: tuple[NDArray[np.float64], ...]
     vocabularies: dict[str, dict[str, int]]
+    numeric_features: tuple[tuple[str, ...], ...] = NUMERIC_FEATURES
+
+    @property
+    def wave_pressure(self) -> bool:
+        """Whether this encoder expects recorded trooper features."""
+        return self.numeric_features == WAVE_NUMERIC_FEATURES
 
     @classmethod
-    def fit(cls, graphs: Iterable[GraphSnapshot]) -> Self:
+    def fit(
+        cls, graphs: Iterable[GraphSnapshot], *, wave_pressure: bool = False
+    ) -> Self:
         """Fit in one pass over training graphs only, ignoring missing values."""
-        sums = [np.zeros(len(names)) for names in NUMERIC_FEATURES]
-        squares = [np.zeros(len(names)) for names in NUMERIC_FEATURES]
-        counts = [np.zeros(len(names)) for names in NUMERIC_FEATURES]
+        numeric_features = WAVE_NUMERIC_FEATURES if wave_pressure else NUMERIC_FEATURES
+        sums = [np.zeros(len(names)) for names in numeric_features]
+        squares = [np.zeros(len(names)) for names in numeric_features]
+        counts = [np.zeros(len(names)) for names in numeric_features]
         categories: dict[str, set[str]] = {
             name: set() for names in CATEGORICAL_FEATURES for name in names
         }
@@ -190,8 +201,14 @@ class GraphEncoder:
         seen = False
         for index, graph in enumerate(graphs, 1):
             seen = True
+            if wave_pressure and not set(WAVE_FEATURES).issubset(
+                graph.global_info.columns
+            ):
+                raise ValueError(
+                    "wave data is missing; use wave-enabled replay preparation or disable wave pressure"
+                )
             for i, table in enumerate(_tables(graph)):
-                values = _numeric(table, NUMERIC_FEATURES[i])
+                values = _numeric(table, numeric_features[i])
                 sums[i] += np.nansum(values, axis=0)
                 squares[i] += np.nansum(values**2, axis=0)
                 counts[i] += np.isfinite(values).sum(axis=0)
@@ -226,6 +243,7 @@ class GraphEncoder:
                 name: {value: i + 2 for i, value in enumerate(sorted(values))}
                 for name, values in categories.items()
             },
+            numeric_features,
         )
 
     def transform(self, graph: GraphSnapshot) -> GraphTensors:
@@ -234,7 +252,7 @@ class GraphEncoder:
         numeric: list[Tensor] = []
         categorical: list[Tensor] = []
         for i, table in enumerate(tables):
-            values = _numeric(table, NUMERIC_FEATURES[i])
+            values = _numeric(table, self.numeric_features[i])
             known = np.isfinite(values)
             scaled = np.where(known, (values - self.means[i]) / self.scales[i], 0)
             numeric.append(

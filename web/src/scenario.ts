@@ -1,5 +1,6 @@
 import catalog from "./data/catalog.json";
 import initialPresets from "./data/presets.json";
+import { WAVE_FEATURES } from "./ml/features";
 import type { RawGraph, RawNode, RawValue } from "./ml/types";
 
 export const TEAMS = [3, 2] as const;
@@ -103,12 +104,15 @@ export function parseScenario(text: string): Scenario {
   )
     throw new Error("This is not a supported scenario file.");
   const g = value.graph;
-  const node = (input: unknown): RawNode => {
+  const node = (input: unknown, world = false): RawNode => {
     if (!input || typeof input !== "object" || Array.isArray(input))
       throw new Error("Each entity must be an object.");
     const out: RawNode = {};
     for (const [key, v] of Object.entries(input)) {
-      if (!keys.has(key)) continue;
+      const wave = world && WAVE_FEATURES.has(key);
+      if (!keys.has(key) && !wave) continue;
+      if (wave && v !== null && (typeof v !== "number" || v < 0))
+        throw new Error(`${key} must be a nonnegative number or missing.`);
       if (
         v !== null &&
         typeof v !== "boolean" &&
@@ -191,9 +195,9 @@ export function parseScenario(text: string): Scenario {
     throw new Error(
       "A scenario supports 1–12 heroes, up to 128 objectives and 512 zipline points.",
     );
-  const players = g.players.map(node),
-    objectives = g.objectives.map(node),
-    ziplines = g.ziplines.map(node);
+  const players = g.players.map((p: unknown) => node(p)),
+    objectives = g.objectives.map((o: unknown) => node(o)),
+    ziplines = g.ziplines.map((z: unknown) => node(z));
   const ids = new Set<number>();
   for (const p of players) {
     if (
@@ -233,7 +237,7 @@ export function parseScenario(text: string): Scenario {
         z.connections.some((h: number) => !handles.has(h)))
     )
       throw new Error("Zipline connections must refer to existing points.");
-  const global_info = node(g.global_info);
+  const global_info = node(g.global_info, true);
   if (
     typeof global_info.elapsed_seconds !== "number" ||
     global_info.elapsed_seconds < 0 ||

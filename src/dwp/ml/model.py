@@ -11,7 +11,6 @@ from torch.nn import functional as F
 from dwp.ml.batching import GraphBatch
 from dwp.ml.features import (
     CATEGORICAL_FEATURES,
-    NUMERIC_FEATURES,
     GraphEncoder,
     GraphTensors,
 )
@@ -136,7 +135,7 @@ class HeterogeneousGraphTransformer(nn.Module):
                 nn.GELU(),
                 nn.LayerNorm(hidden_dim),
             )
-            for names in NUMERIC_FEATURES
+            for names in encoder.numeric_features
         )
         self.categories = nn.ModuleDict(
             {

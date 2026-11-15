@@ -7,7 +7,12 @@ import numpy as np
 import torch
 from torch import Tensor
 
-from dwp.ml.features import CATEGORICAL_FEATURES, NUMERIC_FEATURES, GraphEncoder
+from dwp.ml.features import (
+    CATEGORICAL_FEATURES,
+    NUMERIC_FEATURES,
+    WAVE_NUMERIC_FEATURES,
+    GraphEncoder,
+)
 from dwp.ml.model import HeterogeneousGraphTransformer, ModelConfig
 
 
@@ -32,7 +37,7 @@ def save_model(
             name: value.detach().cpu() for name, value in model.state_dict().items()
         },
         "model_config": model.config,
-        "numeric_features": [list(names) for names in NUMERIC_FEATURES],
+        "numeric_features": [list(names) for names in encoder.numeric_features],
         "categorical_features": [list(names) for names in CATEGORICAL_FEATURES],
         "means": [values.tolist() for values in encoder.means],
         "scales": [values.tolist() for values in encoder.scales],
@@ -46,9 +51,12 @@ def load_model(
 ) -> tuple[HeterogeneousGraphTransformer, GraphEncoder]:
     """Restore an inference-ready model and encoder with weights_only loading."""
     payload = cast(_Checkpoint, torch.load(path, map_location="cpu", weights_only=True))
+    numeric_features = tuple(
+        tuple(names) for names in payload.get("numeric_features", [])
+    )
     if (
         payload["format_version"] != 1
-        or payload["numeric_features"] != [list(names) for names in NUMERIC_FEATURES]
+        or numeric_features not in (NUMERIC_FEATURES, WAVE_NUMERIC_FEATURES)
         or payload["categorical_features"]
         != [list(names) for names in CATEGORICAL_FEATURES]
     ):
@@ -59,6 +67,7 @@ def load_model(
         tuple(np.asarray(values, dtype=np.float64) for values in payload["means"]),
         tuple(np.asarray(values, dtype=np.float64) for values in payload["scales"]),
         payload["vocabularies"],
+        numeric_features,
     )
     model = HeterogeneousGraphTransformer(encoder, **payload["model_config"])
     model.load_state_dict(cast(dict[str, Any], payload["state_dict"]))

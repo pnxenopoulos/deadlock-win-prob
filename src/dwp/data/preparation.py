@@ -93,6 +93,7 @@ def prepare_replays(
     max_snapshots: int = 16,
     seed: int = 42,
     data_version: str | None = None,
+    wave_pressure: bool = True,
 ) -> list[ReplayMatch]:
     """Parse assigned URLs, replacing failed candidates up to a match quota.
 
@@ -123,7 +124,11 @@ def prepare_replays(
                 label = winner_label(winner)
                 graphs = list(
                     iter_graphs(
-                        demo, every=every, end_tick=end - 1, data_version=data_version
+                        demo,
+                        every=every,
+                        end_tick=end - 1,
+                        data_version=data_version,
+                        wave_pressure=wave_pressure,
                     )
                 )
                 # Reject recordings with no players; their global state cannot train a useful model.
@@ -168,6 +173,7 @@ def prepare_matches(
     match_modes: Sequence[MatchMode] = ("Ranked",),
     game_modes: Sequence[GameMode] = ("Normal",),
     data_version: str | None = None,
+    wave_pressure: bool = True,
 ) -> list[ReplayMatch]:
     """Discover and parse a bounded sample for the local end-to-end command.
 
@@ -192,6 +198,7 @@ def prepare_matches(
         max_snapshots=max_snapshots,
         seed=seed,
         data_version=data_version,
+        wave_pressure=wave_pressure,
     )
     if len(prepared) < 3:
         raise ValueError(

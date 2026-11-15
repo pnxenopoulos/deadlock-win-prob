@@ -12,6 +12,7 @@ import torch
 from dwp.cli.train import main
 from dwp.data.preparation import ReplayMatch
 from dwp.graphs.snapshots import GraphSnapshot
+from dwp.graphs.waves import WAVE_FEATURES
 from dwp.ml.checkpoints import load_model
 from dwp.ml.features import GraphEncoder
 from dwp.ml.metrics import probability_metrics
@@ -60,15 +61,16 @@ def test_training_selects_validation_checkpoint_and_exports_reports(
         epochs=2,
         batch_size=2,
         device="cpu",
+        wave_pressure=False,
         model={"hidden_dim": 16, "num_heads": 4, "num_layers": 1, "dropout": 0},
     )
     fitted_ids = set()
     original_fit = GraphEncoder.fit
 
-    def fit(graphs):
+    def fit(graphs, *, wave_pressure=False):
         selected = list(graphs)
         fitted_ids.update(g.match_id for g in selected)
-        return original_fit(selected)
+        return original_fit(selected, wave_pressure=wave_pressure)
 
     monkeypatch.setattr("dwp.ml.training.GraphEncoder.fit", fit)
     calls = []
@@ -133,7 +135,23 @@ def test_cli_runs_the_pipeline(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    prepare = Mock(return_value=matches)
+    prepare = Mock(
+        return_value=[
+            replace(
+                match,
+                graphs=[
+                    replace(
+                        graph,
+                        global_info=graph.global_info.with_columns(
+                            pl.lit(0).alias(name) for name in WAVE_FEATURES
+                        ),
+                    )
+                    for graph in match.graphs
+                ],
+            )
+            for match in matches
+        ]
+    )
     monkeypatch.setattr("dwp.cli.train.prepare_matches", prepare)
     output = tmp_path / "cli-run"
     main(
@@ -162,6 +180,8 @@ def test_cli_runs_the_pipeline(
     )
     assert prepare.call_args.kwargs["days"] == 2
     assert prepare.call_args.kwargs["match_modes"] == ["Ranked"]
+    assert prepare.call_args.kwargs["wave_pressure"] is True
+    assert load_model(output / "model.pt")[1].wave_pressure
     printed = json.loads(capsys.readouterr().out)
     saved = json.loads((output / "metrics.json").read_text())
     assert printed["test_log_loss"] == saved["test"]["log_loss"]

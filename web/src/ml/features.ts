@@ -28,6 +28,16 @@ function numeric(node: RawNode, name: string): number | null {
   }
   return finite(node[name]);
 }
+export const WAVE_LANES = [1, 4, 6] as const;
+export const WAVE_METRICS = ["count", "health", "front_distance"] as const;
+export const WAVE_FEATURES = new Set(
+  [2, 3].flatMap((team) =>
+    WAVE_LANES.flatMap((lane) =>
+      WAVE_METRICS.map((metric) => `wave_${team}_${lane}_${metric}`),
+    ),
+  ),
+);
+
 export function validateEncoder(encoder: Encoder): void {
   if (
     encoder.format_version !== 1 ||
@@ -79,7 +89,9 @@ export function validateEncoder(encoder: Encoder): void {
     throw new Error("Invalid model feature groups.");
   encoder.numeric_features.forEach((names, i) => {
     if (
-      names.some((n) => !supported.has(n)) ||
+      names.some(
+        (n) => !supported.has(n) && !(i === 0 && WAVE_FEATURES.has(n)),
+      ) ||
       encoder.means[i]?.length !== names.length ||
       encoder.scales[i]?.length !== names.length ||
       encoder.means[i].some((v) => !Number.isFinite(v)) ||

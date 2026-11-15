@@ -12,6 +12,7 @@ import {
   Waypoints,
   X,
 } from "lucide-react";
+import { WAVE_LANES, WAVE_METRICS } from "../ml/features";
 import type { RawGraph, RawNode } from "../ml/types";
 import {
   asset,
@@ -27,6 +28,7 @@ import {
   setInventory,
   TEAM_COLORS,
   TEAM_NAMES,
+  TEAMS,
   type Selection,
 } from "../scenario";
 import { Field, NumberField, Toggle } from "./fields";
@@ -44,6 +46,12 @@ interface Props {
   onTime: (seconds: number) => void;
   onLane: (lane: unknown, team: number) => void;
 }
+const WAVE_LABELS = {
+  count: "Trooper count",
+  health: "Total wave health",
+  front_distance: "Distance to enemy Patron",
+};
+
 export function Inspector({
   graph,
   selection,
@@ -55,6 +63,8 @@ export function Inspector({
   upgradeIds,
 }: Props) {
   const [query, setQuery] = useState("");
+  const [waveTeam, setWaveTeam] = useState(2);
+  const [waveLane, setWaveLane] = useState(1);
   const kind = selection.kind,
     node = kind === "world" ? graph.global_info : graph[kind][selection.index];
   if (!node) return null;
@@ -585,6 +595,48 @@ export function Inspector({
               Set Rejuvenator on the heroes who hold it in their individual
               settings.
             </p>
+            <details className="advanced">
+              <summary>Trooper waves</summary>
+              <div className="field-grid">
+                <Field label="Wave team">
+                  <select
+                    value={waveTeam}
+                    onChange={(e) => setWaveTeam(+e.target.value)}
+                  >
+                    {TEAMS.map((team) => (
+                      <option key={team} value={team}>
+                        {TEAM_NAMES[team]}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="Wave lane">
+                  <select
+                    value={waveLane}
+                    onChange={(e) => setWaveLane(+e.target.value)}
+                  >
+                    {WAVE_LANES.map((lane) => (
+                      <option key={lane} value={lane}>
+                        {laneName(lane)}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                {WAVE_METRICS.map((metric) => {
+                  const key = `wave_${waveTeam}_${waveLane}_${metric}`;
+                  return (
+                    <NumberField
+                      key={key}
+                      label={WAVE_LABELS[metric]}
+                      value={node[key]}
+                      min={0}
+                      unit={metric === "front_distance" ? "units" : undefined}
+                      onChange={(value) => onWorld({ [key]: value })}
+                    />
+                  );
+                })}
+              </div>
+            </details>
             <div className="section-label">Scenario overview</div>
             <div className="stat-pair">
               <span>Heroes</span>

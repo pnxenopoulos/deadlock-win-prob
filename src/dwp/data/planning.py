@@ -5,7 +5,7 @@ import json
 import logging
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import NotRequired, TypedDict, cast
 
 from dwp.data.deadlock_api import GameMode, MatchMode
 from dwp.data.preparation import select_candidates
@@ -30,6 +30,7 @@ class PreparationPlan(TypedDict):
     max_snapshots: int
     seed: int
     data_version: str | None
+    wave_pressure: NotRequired[bool]
     source: dict[str, object]
     shards: list[ShardPlan]
 
@@ -53,6 +54,7 @@ def plan_matches(
     match_modes: Sequence[MatchMode] = ("Ranked",),
     game_modes: Sequence[GameMode] = ("Normal",),
     data_version: str | None = None,
+    wave_pressure: bool = True,
 ) -> PreparationPlan:
     """Discover once, shuffle once, then assign disjoint pools and fair quotas.
 
@@ -105,6 +107,8 @@ def plan_matches(
         },
         "shards": shards,
     }
+    if wave_pressure:
+        plan["wave_pressure"] = True
     plan["plan_id"] = _fingerprint(plan)
     logging.getLogger(__name__).info(
         "Planned %d candidate URLs across %d workers for up to %d matches",

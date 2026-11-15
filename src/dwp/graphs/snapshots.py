@@ -8,6 +8,8 @@ from typing import cast
 import polars as pl
 from boon import Demo, HeroStat, StatMode, data
 
+from dwp.graphs.waves import wave_features
+
 _NODE_COLUMNS = ("node_id", "node_type", "team_num", "x", "y", "z")
 _STAT_SCHEMA = {
     "stat": pl.String,
@@ -150,6 +152,7 @@ def iter_graphs(
     end_tick: int | None = None,
     data_version: str | None = None,
     baseline_stats: Sequence[HeroStat | str] = _DEFAULT_STATS,
+    wave_pressure: bool = False,
 ) -> Iterator[GraphSnapshot]:
     """Yield one graph at every N recorded ticks, within an optional window.
 
@@ -165,15 +168,19 @@ def iter_graphs(
     value/unit/status/diagnostic. Baseline includes passive item and permanent
     bonuses, not just untouched hero stats. Without a version those fields are
     null. Catalogs may be downloaded by Boon. No match outcome is included.
+    Set wave_pressure=True to add team and lane troop aggregates to global_info.
     """
     if every <= 0:
         raise ValueError("every must be positive")
     if data_version is not None and not data_version:
         raise ValueError("data_version must be a nonempty version string")
+    datasets = ["player_ticks", "world_ticks", "ziplines"]
+    if wave_pressure:
+        datasets.append("troopers")
     frames = cast(
         dict[str, pl.DataFrame],
         demo.snapshots(
-            ["player_ticks", "world_ticks", "ziplines"],
+            datasets,
             every=every if ticks is None else None,
             ticks=list(ticks) if ticks is not None else None,
             start_tick=start_tick,
@@ -325,6 +332,13 @@ def iter_graphs(
         "global",
         pl.lit("global"),
     )
+    if wave_pressure:
+        global_info = global_info.join(
+            wave_features(tick_frame, frames["troopers"], objectives),
+            on="tick",
+            how="left",
+            validate="1:1",
+        )
     tables = (global_info, players, objectives, ziplines)
     groups = [table.partition_by("tick", as_dict=True) for table in tables]
     for tick in tick_values:

@@ -85,6 +85,7 @@ def test_ten_second_samples_use_active_time_and_preserve_model_mode(
         "ticks": [0, 150, 250],
         "end_tick": 300,
         "data_version": "training-version",
+        "wave_pressure": False,
     }
     assert result["tick"].to_list() == [0, 150, 250]
     assert result["elapsed_seconds"].to_list() == [0, 10, 20]

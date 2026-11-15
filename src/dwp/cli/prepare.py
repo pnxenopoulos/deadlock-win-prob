@@ -43,6 +43,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         default=["Normal"],
     )
     planner.add_argument("--data-version")
+    planner.add_argument(
+        "--wave-pressure",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include team and lane trooper features (default: enabled)",
+    )
     planner.add_argument("--output", type=Path, required=True)
     worker = commands.add_parser("shard", help="Parse one assigned candidate pool")
     worker.add_argument("--plan", type=Path, required=True)
@@ -69,6 +75,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             match_modes=args.match_modes,
             game_modes=args.game_modes,
             data_version=args.data_version,
+            wave_pressure=args.wave_pressure,
         )
         write_plan(plan, args.output)
         print(
@@ -95,6 +102,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             max_snapshots=plan["max_snapshots"],
             seed=plan["seed"],
             data_version=plan["data_version"],
+            wave_pressure=plan.get("wave_pressure", False),
         )
         save_graph_shard(matches, args.output, plan, args.shard_id)
         print(

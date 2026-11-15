@@ -73,6 +73,7 @@ def test_sampling_is_reproducible_and_uses_native_winner(
         "every": 4096,
         "end_tick": 199,
         "data_version": "v1",
+        "wave_pressure": True,
     }
     assert source["load_replay"].call_args.kwargs["session"] is not None
 

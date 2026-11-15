@@ -72,7 +72,11 @@ def predict_win_probabilities(
     model.eval()
     try:
         for graph in iter_graphs(
-            demo, ticks=ticks, end_tick=end_tick, data_version=data_version
+            demo,
+            ticks=ticks,
+            end_tick=end_tick,
+            data_version=data_version,
+            wave_pressure=encoder.wave_pressure,
         ):
             if graph.players.is_empty():
                 continue

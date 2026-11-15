@@ -78,6 +78,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     parser.add_argument("--model", choices=("graph", "kumo"), default="graph")
     parser.add_argument(
+        "--wave-pressure",
+        action=argparse.BooleanOptionalAction,
+        help="Use team and lane trooper features (enabled for graph models by default)",
+    )
+    parser.add_argument(
         "--model-version", default="v1.0.0", help="Model version (vMAJOR.MINOR.PATCH)"
     )
     parser.add_argument(
@@ -122,6 +127,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
     features = args.features or DEFAULT_FEATURE_SET
+    wave_pressure = args.model == "graph" and args.wave_pressure is not False
     try:
         config = TrainingConfig(
             epochs=args.epochs,
@@ -132,6 +138,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             train_fraction=args.train_fraction,
             validation_fraction=args.validation_fraction,
             device=args.device,
+            wave_pressure=wave_pressure,
             model={
                 "hidden_dim": args.hidden_dim,
                 "num_heads": args.num_heads,
@@ -147,6 +154,8 @@ def main(argv: Sequence[str] | None = None) -> None:
                 "days/every/max-snapshots/threads must be positive and matches >= 3"
             )
         if args.model == "kumo":
+            if args.wave_pressure:
+                raise ValueError("--wave-pressure applies only to the graph model")
             if args.prepared_data is None and args.matches < 4:
                 raise ValueError("Kumo requires --matches >= 4")
             if args.context_rows < 2 or args.num_estimators < 1:
@@ -179,6 +188,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     data_config = vars(args)
     if args.prepared_data is not None:
         plan = read_plan(args.plan)
+        if wave_pressure and not plan.get("wave_pressure", False):
+            parser.error(
+                "this plan has no wave data; prepare a new plan or use --no-wave-pressure"
+            )
         matches = load_graph_shards(args.prepared_data, plan)
         data_config = {
             "prepared_data": str(args.prepared_data),
@@ -195,6 +208,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             match_modes=args.match_modes,
             game_modes=args.game_modes,
             data_version=args.data_version if args.model == "graph" else None,
+            wave_pressure=wave_pressure,
         )
     if args.model == "kumo":
         from dwp.ml.tabular_training import train_tabular

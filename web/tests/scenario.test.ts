@@ -21,6 +21,7 @@ test("every identity-free preset survives import/export with its actual topology
     expect(imported.graph.players).toHaveLength(12);
     expect(imported.graph.ziplines).toEqual(preset.graph.ziplines);
     expect(imported.graph.players).toEqual(preset.graph.players);
+    expect(imported.graph.global_info).toEqual(preset.graph.global_info);
     expect(saved).not.toContain("steam_id");
     expect(saved).not.toContain("entity_serial");
   }
@@ -44,6 +45,9 @@ test("imports reject invalid state before tensor allocation", () => {
     },
     (g: RawGraph) => {
       g.global_info.elapsed_seconds = -100;
+    },
+    (g: RawGraph) => {
+      g.global_info.wave_2_1_count = -1;
     },
     (g: RawGraph) => {
       g.players[0].is_alive = "true";

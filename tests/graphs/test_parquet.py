@@ -174,6 +174,7 @@ def test_final_training_command_reads_parquet_without_network(
             "1",
             "--device",
             "cpu",
+            "--no-wave-pressure",
             "--output",
             str(output),
         ]
