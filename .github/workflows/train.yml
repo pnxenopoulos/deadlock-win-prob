@@ -9,10 +9,6 @@ on:
         type: choice
         options: [graph, kumo]
         default: graph
-      wave_pressure:
-        description: Include trooper wave features (graph only)
-        type: boolean
-        default: true
       model_version:
         description: Model version (for example v1.0.0)
         type: string
@@ -146,7 +142,6 @@ jobs:
         id: plan
         env:
           MODEL: ${{ inputs.model }}
-          WAVE_PRESSURE: ${{ inputs.wave_pressure }}
           DAYS: ${{ inputs.days }}
           MATCHES: ${{ inputs.matches }}
           WORKERS: ${{ inputs.workers }}
@@ -160,7 +155,7 @@ jobs:
         run: |
           set -euo pipefail
           wave_args=()
-          if [ "$MODEL" != graph ] || [ "$WAVE_PRESSURE" = false ]; then
+          if [ "$MODEL" = kumo ]; then
             wave_args+=(--no-wave-pressure)
           fi
           uv run --locked --no-dev dwp-prepare plan "${wave_args[@]}" \
@@ -283,7 +278,6 @@ jobs:
           NUM_ESTIMATORS: ${{ inputs.num_estimators }}
           DATA_VERSION: ${{ inputs.data_version }}
           MODEL_VERSION: ${{ inputs.model_version }}
-          WAVE_PRESSURE: ${{ inputs.wave_pressure }}
           EPOCHS: ${{ inputs.epochs }}
           BATCH_SIZE: ${{ inputs.batch_size }}
           SEED: ${{ inputs.seed }}
@@ -315,8 +309,6 @@ jobs:
               args+=(--data-version "$DATA_VERSION")
             fi
             output=runs/ci/model
-          elif [ "$WAVE_PRESSURE" = false ]; then
-            args+=(--no-wave-pressure)
           fi
           /usr/bin/time -v -o training-resources.log \
             uv run --locked --no-dev "${extra[@]}" dwp-train \
